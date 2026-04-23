@@ -1,0 +1,664 @@
+/**
+ * API 基础设施层
+ * 统一的 API 调用、重试、错误处理、JSON 清理等工具函数
+ */
+
+import { AspectRatio } from "../../types";
+import { logger, LogCategory } from '../logger';
+import {
+  getGlobalApiKey as getRegistryApiKey,
+  setGlobalApiKey as setRegistryApiKey,
+  getApiBaseUrlForModel,
+  getApiKeyForModel,
+  getApiKeySource,
+  validateApiKey,
+  getModelById,
+  getModels,
+  getActiveModel,
+  getActiveChatModel,
+  getActiveVideoModel,
+  getActiveImageModel,
+} from '../modelRegistry';
+
+/**
+ * 检查是否为 BigModel 模型
+ */
+const isBigModelModel = (modelId: string): boolean => {
+  return modelId.startsWith('glm-') || modelId.startsWith('cogview') || modelId.startsWith('vidu') || modelId.startsWith('cogvideo');
+};
+
+/**
+ * 检查是否为 BigModel 视频模型
+ */
+const isBigModelVideoModel = (modelId: string): boolean => {
+  return modelId.startsWith('vidu') || modelId.startsWith('cogvideo') || modelId.startsWith('cogvideox');
+};
+
+/**
+ * 开发环境获取 API Base URL（使用代理避免 CORS）
+ * 注意：BigModel 视频模型使用视频代理，其他 BigModel 模型使用普通代理
+ */
+const getDevApiBaseUrl = (modelId: string): string => {
+  if (isBigModelVideoModel(modelId)) {
+    return '/bigmodel';
+  }
+  if (isBigModelModel(modelId)) {
+    return '/bigmodel';
+  }
+  return getApiBaseUrlForModel(modelId);
+};
+
+// ============================================
+// 脚本日志回调（供各服务模块使用）
+// ============================================
+
+type ScriptLogCallback = (message: string) => void;
+
+let scriptLogCallback: ScriptLogCallback | null = null;
+
+export const setScriptLogCallback = (callback: ScriptLogCallback) => {
+  scriptLogCallback = callback;
+};
+
+export const clearScriptLogCallback = () => {
+  scriptLogCallback = null;
+};
+
+export const logScriptProgress = (message: string) => {
+  if (scriptLogCallback) {
+    scriptLogCallback(message);
+  }
+};
+
+// ============================================
+// API Key 管理
+// ============================================
+
+/**
+ * API Key 错误类
+ */
+export class ApiKeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiKeyError';
+  }
+}
+
+/** 运行时 API Key（向后兼容） */
+let runtimeApiKey: string = process.env.API_KEY || "";
+
+/**
+ * 设置全局API密钥
+ */
+export const setGlobalApiKey = (key: string) => {
+  runtimeApiKey = key;
+  setRegistryApiKey(key);
+};
+
+/** 默认 API base URL（向后兼容） */
+const DEFAULT_API_BASE = 'https://api.antsk.cn';
+
+/**
+ * 解析模型：根据 type 和可选 modelId 找到对应的模型配置
+ */
+export const resolveModel = (type: 'chat' | 'image' | 'video', modelId?: string) => {
+  if (modelId) {
+    const normalizedModelId = modelId.toLowerCase();
+    const lookupId = normalizedModelId === 'veo_3_1-fast-4k' ? 'veo_3_1-fast' : modelId;
+    
+    // 首先尝试通过 id 精确匹配
+    const model = getModelById(lookupId);
+    if (model && model.type === type) {
+      logger.debug(LogCategory.AI, `[resolveModel] 通过 id 找到模型: ${model.id} ${model.name}`);
+      return model;
+    }
+    
+    // 然后尝试通过 apiModel 匹配
+    const candidates = getModels(type).filter(m => m.apiModel === lookupId);
+    if (candidates.length === 1) {
+      logger.debug(LogCategory.AI, `[resolveModel] 通过 apiModel 找到模型: ${candidates[0].id} ${candidates[0].name}`);
+      return candidates[0];
+    }
+    
+    // 如果都找不到，记录警告并使用激活的模型
+    logger.warn(LogCategory.AI, `[resolveModel] 未找到模型: ${modelId}, 将使用激活的模型`);
+  }
+  
+  const activeModel = getActiveModel(type);
+  if (activeModel) {
+    logger.debug(LogCategory.AI, `[resolveModel] 使用激活的模型: ${activeModel.id} ${activeModel.name}`);
+    return activeModel;
+  }
+  
+  logger.warn(LogCategory.AI, '[resolveModel] 没有激活的模型，返回 undefined');
+  return undefined;
+};
+
+/**
+ * 解析请求用的模型名称（apiModel 字段）
+ */
+export const resolveRequestModel = (type: 'chat' | 'image' | 'video', modelId?: string): string => {
+  if (modelId && modelId.toLowerCase() === 'veo_3_1-fast-4k') {
+    return modelId;
+  }
+  const resolved = resolveModel(type, modelId);
+  return resolved?.apiModel || resolved?.id || modelId || '';
+};
+
+/**
+ * 检查并返回 API Key
+ * @throws {ApiKeyError} 如果 API Key 缺失
+ */
+export const checkApiKey = (type: 'chat' | 'image' | 'video' = 'chat', modelId?: string): string => {
+  const resolvedModel = resolveModel(type, modelId);
+  logger.debug(LogCategory.AI, `[checkApiKey] type=${type}, modelId=${modelId}, resolvedModel=${resolvedModel?.id} ${resolvedModel?.providerId}`);
+
+  if (resolvedModel) {
+    const modelApiKey = getApiKeyForModel(resolvedModel.id);
+    const apiKeySource = getApiKeySource(resolvedModel.id);
+    logger.debug(LogCategory.AI, `[checkApiKey] modelApiKey found: ${!!modelApiKey}, source: ${apiKeySource}`);
+    
+    if (modelApiKey) return modelApiKey;
+    
+    // 如果没有找到 API Key，抛出更详细的错误
+    const validation = validateApiKey(type, resolvedModel.id);
+    if (!validation.isValid) {
+      throw new ApiKeyError(`${validation.message} (来源: ${validation.source})`);
+    }
+  }
+
+  const registryKey = getRegistryApiKey();
+  logger.debug(LogCategory.AI, `[checkApiKey] registryKey found: ${!!registryKey}`);
+  if (registryKey) return registryKey;
+
+  logger.debug(LogCategory.AI, `[checkApiKey] runtimeApiKey found: ${!!runtimeApiKey}`);
+  if (!runtimeApiKey) throw new ApiKeyError("API Key 缺失，请在模型配置中设置 API Key。");
+  return runtimeApiKey;
+};
+
+/**
+ * 获取 API 基础 URL
+ */
+export const getApiBase = (type: 'chat' | 'image' | 'video' = 'chat', modelId?: string): string => {
+  try {
+    const resolvedModel = resolveModel(type, modelId);
+    if (resolvedModel) {
+      // 使用开发环境代理
+      return getDevApiBaseUrl(resolvedModel.id);
+    }
+    return DEFAULT_API_BASE;
+  } catch (e) {
+    return DEFAULT_API_BASE;
+  }
+};
+
+/**
+ * 获取当前激活的对话模型名称
+ */
+export const getActiveChatModelName = (): string => {
+  try {
+    const model = getActiveChatModel();
+    return model?.apiModel || model?.id || getDefaultChatModelId();
+  } catch (e) {
+    return getDefaultChatModelId();
+  }
+};
+
+/**
+ * 获取默认的对话模型ID（用于后备）
+ */
+export const getDefaultChatModelId = (): string => {
+  try {
+    const model = getActiveChatModel();
+    if (model?.id) return model.id;
+    
+    // 如果没有激活模型，返回第一个可用的模型
+    const models = getModels('chat');
+    const enabledModel = models.find(m => m.isEnabled);
+    return enabledModel?.id || models[0]?.id || 'gpt-5.1';
+  } catch (e) {
+    return 'gpt-5.1';
+  }
+};
+
+// Re-export modelRegistry helpers that other modules may need
+export { getActiveModel, getActiveChatModel, getActiveVideoModel, getActiveImageModel };
+
+// ============================================
+// 通用工具函数
+// ============================================
+
+/**
+ * 重试操作辅助函数，用于处理429限流、超时、服务器错误等临时性错误
+ * 采用指数退避策略
+ */
+export const retryOperation = async <T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 2000
+): Promise<T> => {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await operation();
+    } catch (e: any) {
+      lastError = e;
+      const isRetryableError =
+        e.status === 429 ||
+        e.code === 429 ||
+        e.status === 504 ||
+        e.message?.includes('429') ||
+        e.message?.includes('quota') ||
+        e.message?.includes('RESOURCE_EXHAUSTED') ||
+        e.message?.includes('超时') ||
+        e.message?.includes('timeout') ||
+        e.message?.includes('Gateway Timeout') ||
+        e.message?.includes('504') ||
+        e.message?.includes('ECONNRESET') ||
+        e.message?.includes('ETIMEDOUT') ||
+        e.message?.includes('network') ||
+        e.message?.includes('openai_error') ||
+        e.status >= 500;
+
+      if (isRetryableError && i < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, i);
+        logger.warn(LogCategory.AI, `请求失败，正在重试... (第 ${i + 1}/${maxRetries} 次，${delay}ms后重试) ${e.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastError;
+};
+
+/**
+ * 清理AI返回的JSON字符串，移除markdown代码块标记
+ */
+export const cleanJsonString = (str: string): string => {
+  if (!str) return "{}";
+  let cleaned = str.trim();
+  // Remove markdown code block markers
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
+  cleaned = cleaned.replace(/```\s*$/, '');
+  // Try to find a valid JSON object in the response
+  // This handles cases where AI returns text before/after the JSON
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
+  }
+  return cleaned.trim();
+};
+
+/**
+ * 从 HTTP 错误响应中解析错误信息，返回带 status 属性的 Error
+ */
+export const parseHttpError = async (response: Response): Promise<Error> => {
+  const httpStatus = response.status;
+  let errorMessage = `HTTP错误: ${httpStatus}`;
+  try {
+    const errorData = await response.json();
+    errorMessage = errorData.error?.message || errorMessage;
+  } catch (e) {
+    try {
+      const errorText = await response.text();
+      if (errorText) errorMessage = errorText;
+    } catch {
+      // ignore
+    }
+  }
+  const err: any = new Error(errorMessage);
+  err.status = httpStatus;
+  return err;
+};
+
+// ============================================
+// Chat Completion API
+// ============================================
+
+/**
+ * 调用聊天完成API（非流式）
+ */
+export const chatCompletion = async (
+  prompt: string,
+  model?: string,
+  temperature: number = 0.7,
+  maxTokens: number = 8192,
+  responseFormat?: 'json_object',
+  timeout: number = 600000
+): Promise<string> => {
+  const resolvedModel = model || getDefaultChatModelId();
+  const apiKey = checkApiKey('chat', resolvedModel);
+  const requestModel = resolveRequestModel('chat', resolvedModel);
+
+  const requestBody: any = {
+    model: requestModel,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: temperature
+  };
+
+  if (responseFormat === 'json_object') {
+    requestBody.response_format = { type: 'json_object' };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const apiBase = getApiBase('chat', resolvedModel);
+    const resolved = resolveModel('chat', resolvedModel);
+    const endpoint = resolved?.endpoint || '/v1/chat/completions';
+    const response = await fetch(`${apiBase}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw await parseHttpError(response);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || '';
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`请求超时（${timeout}ms）`);
+    }
+    throw error;
+  }
+};
+
+/**
+ * 调用聊天完成API（SSE流式模式）
+ */
+export const chatCompletionStream = async (
+  prompt: string,
+  model?: string,
+  temperature: number = 0.7,
+  responseFormat: 'json_object' | undefined = undefined,
+  timeout: number = 600000,
+  onDelta?: (delta: string) => void
+): Promise<string> => {
+  const resolvedModel = model || getDefaultChatModelId();
+  const apiKey = checkApiKey('chat', resolvedModel);
+  const requestModel = resolveRequestModel('chat', resolvedModel);
+  const requestBody: any = {
+    model: requestModel,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: temperature,
+    stream: true
+  };
+
+  if (responseFormat === 'json_object') {
+    requestBody.response_format = { type: 'json_object' };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const apiBase = getApiBase('chat', model);
+    const resolved = resolveModel('chat', model);
+    const endpoint = resolved?.endpoint || '/v1/chat/completions';
+    const response = await fetch(`${apiBase}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw await parseHttpError(response);
+    }
+
+    if (!response.body) {
+      throw new Error('响应流为空，无法进行流式处理');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let fullText = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundaryIndex = buffer.indexOf('\n\n');
+      while (boundaryIndex !== -1) {
+        const chunk = buffer.slice(0, boundaryIndex).trim();
+        buffer = buffer.slice(boundaryIndex + 2);
+
+        if (chunk) {
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const dataStr = line.replace(/^data:\s*/, '');
+            if (dataStr === '[DONE]') {
+              clearTimeout(timeoutId);
+              return fullText;
+            }
+            try {
+              const payload = JSON.parse(dataStr);
+              const delta = payload?.choices?.[0]?.delta?.content || payload?.choices?.[0]?.message?.content || '';
+              if (delta) {
+                fullText += delta;
+                onDelta?.(delta);
+              }
+            } catch (e) {
+              // 忽略解析失败的行
+            }
+          }
+        }
+
+        boundaryIndex = buffer.indexOf('\n\n');
+      }
+    }
+
+    clearTimeout(timeoutId);
+    return fullText;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`请求超时（${timeout}ms）`);
+    }
+    throw error;
+  }
+};
+
+// ============================================
+// API Key 验证
+// ============================================
+
+/**
+ * 验证 API Key 的连通性
+ */
+export const verifyApiKey = async (key: string): Promise<{ success: boolean; message: string }> => {
+  try {
+    const apiBase = getApiBase('chat');
+    const resolvedModel = getDefaultChatModelId();
+    const requestModel = resolveRequestModel('chat', resolvedModel);
+    
+    const response = await fetch(`${apiBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`
+      },
+      body: JSON.stringify({
+        model: requestModel,
+        messages: [{ role: 'user', content: '仅返回1' }],
+        temperature: 0.1,
+        max_tokens: 5
+      })
+    });
+
+    if (!response.ok) {
+      let errorMessage = `验证失败: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error?.message || errorMessage;
+      } catch (e) {
+        // ignore
+      }
+      return { success: false, message: errorMessage };
+    }
+
+    const data = await response.json();
+    if (data.choices?.[0]?.message?.content !== undefined) {
+      return { success: true, message: 'API Key 验证成功' };
+    } else {
+      return { success: false, message: '返回格式异常' };
+    }
+  } catch (error: any) {
+    return { success: false, message: error.message || '网络错误' };
+  }
+};
+
+// ============================================
+// 媒体工具函数
+// ============================================
+
+/**
+ * 将视频URL转换为base64格式
+ */
+export const convertVideoUrlToBase64 = async (url: string): Promise<string> => {
+  // 处理 BigModel 视频 URL 代理
+  let proxyUrl = url;
+  
+  if (url.includes('aigc-files.bigmodel.cn')) {
+    const videoPath = url.replace('https://aigc-files.bigmodel.cn/', '');
+    proxyUrl = `/bigmodel-files/${videoPath}`;
+    logger.debug(LogCategory.VIDEO, `[Video] 使用 BigModel 文件代理: ${proxyUrl}`);
+  } else if (url.includes('ufileos.com')) {
+    const videoPath = url.replace('https://maas-watermark-prod-new.cn-wlcb.ufileos.com/', '');
+    proxyUrl = `/video-proxy/${videoPath}`;
+    logger.debug(LogCategory.VIDEO, `[Video] 使用 UCloud 代理: ${proxyUrl}`);
+  } else {
+    // 其他 URL 直接使用
+    proxyUrl = url;
+  }
+
+  try {
+    // 使用代理下载
+    const response = await fetch(proxyUrl);
+    
+    // 检查响应状态
+    const contentType = response.headers.get('content-type') || '';
+    logger.debug(LogCategory.VIDEO, `[Video] 代理响应状态: ${response.status}, 类型: ${contentType}`);
+    
+    // 如果返回的不是视频类型（包括 HTML 错误页面）
+    const isVideoType = contentType.startsWith('video/') || 
+                        contentType.includes('octet-stream') || 
+                        contentType.includes('application/octet-stream');
+    
+    if (!isVideoType) {
+      // 尝试读取响应内容看看是什么
+      const text = await response.text();
+      logger.error(LogCategory.VIDEO, `[Video] 代理返回非视频类型，内容前500字符: ${text.substring(0, 500)}`);
+      
+      // 如果内容是 HTML，说明代理有问题
+      if (text.trim().startsWith('<') || text.includes('<!DOCTYPE')) {
+        throw new Error(`视频下载失败: 代理返回 HTML 错误页面，可能是代理配置问题或服务器错误`);
+      }
+      
+      // 如果不是 HTML，可能是其他错误
+      throw new Error(`视频下载失败: 代理返回非视频类型内容 (${contentType})`);
+    }
+    
+    if (!response.ok) {
+      throw new Error(`下载视频失败: HTTP ${response.status}`);
+    }
+    
+    // 获取 Blob 并转换
+    const blob = await response.blob();
+    logger.debug(LogCategory.VIDEO, `[Video] 获取到视频 Blob, 大小: ${blob.size}, 类型: ${blob.type}`);
+    
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        logger.debug(LogCategory.VIDEO, `[Video] 视频转换为 base64 成功, 长度: ${base64String.length}`);
+        resolve(base64String);
+      };
+      reader.onerror = () => {
+        reject(new Error('转换视频为base64失败'));
+      };
+      reader.readAsDataURL(blob);
+    });
+  } catch (error: any) {
+    logger.error(LogCategory.VIDEO, '视频URL转base64失败:', error);
+    
+    // 如果是 CORS 错误，给出更明确的提示
+    if (error.message?.includes('Failed to fetch') || error.message?.includes('CORS')) {
+      throw new Error(`视频下载失败: 存在 CORS 跨域问题，请确保视频服务器允许跨域访问`);
+    }
+    throw new Error(`视频转换失败: ${error.message}`);
+  }
+};
+
+/**
+ * 调整图片尺寸到指定宽高（cover模式，保持比例居中裁剪）
+ */
+export const resizeImageToSize = async (base64Data: string, targetWidth: number, targetHeight: number): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('无法创建canvas上下文'));
+        return;
+      }
+      const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+      const scaledWidth = img.width * scale;
+      const scaledHeight = img.height * scale;
+      const offsetX = (targetWidth - scaledWidth) / 2;
+      const offsetY = (targetHeight - scaledHeight) / 2;
+      ctx.drawImage(img, offsetX, offsetY, scaledWidth, scaledHeight);
+      const result = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+      resolve(result);
+    };
+    img.onerror = () => reject(new Error('图片加载失败'));
+    img.src = `data:image/png;base64,${base64Data}`;
+  });
+};
+
+// ============================================
+// 视频模型辅助
+// ============================================
+
+/**
+ * 获取 Veo 模型名称（根据横竖屏和是否有参考图）
+ */
+export const getVeoModelName = (hasReferenceImage: boolean, aspectRatio: AspectRatio): string => {
+  const orientation = aspectRatio === '9:16' ? 'portrait' : 'landscape';
+  if (hasReferenceImage) {
+    return `veo_3_1_i2v_s_fast_fl_${orientation}`;
+  } else {
+    return `veo_3_1_t2v_fast_${orientation}`;
+  }
+};
+
+/**
+ * 根据横竖屏比例获取 Sora 视频尺寸
+ */
+export const getSoraVideoSize = (aspectRatio: AspectRatio): string => {
+  const sizeMap: Record<AspectRatio, string> = {
+    '16:9': '1280x720',
+    '9:16': '720x1280',
+    '1:1': '720x720',
+  };
+  return sizeMap[aspectRatio];
+};

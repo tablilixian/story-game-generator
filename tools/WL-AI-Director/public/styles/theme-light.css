@@ -1,0 +1,105 @@
+/* 赛博朋克霓虹风格 (Cyberpunk Neon Style) */
+[data-theme="light"] {
+  /* 基础背景色 - 深紫蓝色调 */
+  --bg-base: #0A0A12;
+  --bg-primary: #12121F;
+  --bg-secondary: #1A1A2E;
+  --bg-surface: #1F1F35;
+  --bg-elevated: #2A2A45;
+  --bg-deep: #06060C;
+  --bg-sunken: #16162A;
+  --bg-hover: #353555;
+
+  /* 边框色 - 霓虹边框 */
+  --border-primary: #2A2A45;
+  --border-secondary: #3D3D60;
+  --border-subtle: #1F1F35;
+
+  /* 文字色 - 霓虹白 */
+  --text-primary: #F0F0FF;
+  --text-secondary: #C8C8E8;
+  --text-tertiary: #9090C0;
+  --text-muted: #6060A0;
+
+  /* 滚动条 */
+  --scrollbar-track: #0A0A12;
+  --scrollbar-thumb: #3D3D60;
+  --scrollbar-thumb-hover: #5050A0;
+
+  /* 毛玻璃效果 */
+  --glass-bg: rgba(18, 18, 31, 0.9);
+  --glass-border: rgba(0, 255, 255, 0.1);
+
+  /* 导航样式 */
+  --nav-active-bg: rgba(0, 255, 255, 0.1);
+  --nav-hover-bg: rgba(255, 0, 255, 0.05);
+
+  /* 主按钮样式 - 霓虹青色 */
+  --btn-primary-bg: #00FFFF;
+  --btn-primary-text: #0A0A12;
+  --btn-primary-hover: #40FFFF;
+  --btn-primary-shadow: rgba(0, 255, 255, 0.4);
+
+  /* 选中状态 */
+  --btn-selected-bg: rgba(0, 255, 255, 0.15);
+  --btn-selected-border: rgba(0, 255, 255, 0.5);
+
+  /* 遮罩层 */
+  --overlay-heavy: rgba(6, 6, 12, 0.9);
+  --overlay-medium: rgba(6, 6, 12, 0.7);
+  --overlay-light: rgba(6, 6, 12, 0.4);
+  --overlay-full: rgba(6, 6, 12, 0.95);
+  --overlay-border: rgba(0, 255, 255, 0.15);
+
+  /* 选中文字背景 */
+  --selection-bg: rgba(255, 0, 255, 0.3);
+
+  /* 主题强调色 (accent) - 霓虹品红 */
+  --accent: #FF00FF;
+  --accent-hover: #FF40FF;
+  --accent-muted: #CC00CC;
+  --accent-bg: rgba(255, 0, 255, 0.12);
+  --accent-bg-hover: rgba(255, 0, 255, 0.2);
+  --accent-border: rgba(255, 0, 255, 0.4);
+  --accent-text: #FF40FF;
+  --accent-text-hover: #FF80FF;
+  --accent-on: #FFFFFF;
+  --accent-shadow: rgba(255, 0, 255, 0.35);
+
+  /* 开关/Toggle */
+  --toggle-active: #00FFFF;
+  --toggle-inactive: var(--border-secondary);
+  --toggle-knob: #FFFFFF;
+
+  /* 状态色: 成功 - 霓虹绿 */
+  --success: #00FF88;
+  --success-text: #40FFAA;
+  --success-bg: rgba(0, 255, 136, 0.1);
+  --success-border: rgba(0, 255, 136, 0.35);
+
+  /* 状态色: 错误/危险 - 霓虹红 */
+  --error: #FF0055;
+  --error-text: #FF4080;
+  --error-bg: rgba(255, 0, 85, 0.1);
+  --error-border: rgba(255, 0, 85, 0.35);
+  --error-hover-bg: rgba(255, 0, 85, 0.15);
+  --error-hover-bg-strong: rgba(255, 0, 85, 0.25);
+
+  /* 状态色: 警告 - 霓虹黄 */
+  --warning: #FFFF00;
+  --warning-text: #FFFF60;
+  --warning-bg: rgba(255, 255, 0, 0.1);
+  --warning-border: rgba(255, 255, 0, 0.35);
+
+  /* 状态色: 信息 - 霓虹青 */
+  --info: #00FFFF;
+  --info-text: #60FFFF;
+  --info-bg: rgba(0, 255, 255, 0.1);
+  --info-border: rgba(0, 255, 255, 0.35);
+
+  /* 辅助标记色: purple (霓虹紫) */
+  --tag-purple: #BF00FF;
+  --tag-purple-bg: rgba(191, 0, 255, 0.1);
+  --tag-purple-border: rgba(191, 0, 255, 0.35);
+  --tag-purple-hover: rgba(191, 0, 255, 0.18);
+}

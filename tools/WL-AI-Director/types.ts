@@ -1,0 +1,273 @@
+export interface CharacterVariation {
+  id: string;
+  name: string;
+  visualPrompt: string;
+  negativePrompt?: string;
+  imageUrl?: string;
+  status?: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+/**
+ * 角色九宫格造型设计 - 单个视角面板数据
+ * 用于多视角展示角色外观，提升镜头图生成时的角色一致性
+ */
+export interface CharacterTurnaroundPanel {
+  index: number;           // 0-8, 九宫格位置索引
+  viewAngle: string;       // 视角：正面/左侧面/右侧面/背面/3/4左侧/3/4右侧/俯视/仰视 等
+  shotSize: string;        // 景别：全身/半身/特写 等
+  description: string;     // 该格子的视觉描述
+}
+
+/**
+ * 角色九宫格造型设计数据
+ * 提供角色的多视角参考图，用于在分镜生成时按镜头角度匹配最佳参考
+ */
+export interface CharacterTurnaroundData {
+  panels: CharacterTurnaroundPanel[];
+  imageUrl?: string;
+  prompt?: string;
+  status: 'pending' | 'generating_panels' | 'panels_ready' | 'generating_image' | 'completed' | 'failed';
+}
+
+/**
+ * 视觉描述字段 - 用于角色标志性姿态和病态微动作
+ * 支持 AI 润色和预览图功能
+ */
+export interface VisualDescriptionField {
+  original: string;        // 用户输入的原文本
+  polished?: string;        // AI 润色后的文本（可编辑）
+  previewImageUrl?: string; // 预览图 URL
+}
+
+export interface Character {
+  id: string;
+  name: string;
+  gender: string;
+  age: string;
+  personality: string;
+  visualPrompt?: string;
+  negativePrompt?: string;
+  coreFeatures?: string;
+  imageUrl?: string;
+  turnaround?: CharacterTurnaroundData;
+  variations: CharacterVariation[];
+  status?: 'pending' | 'generating' | 'completed' | 'failed';
+
+  // 【新增】病态微动作 - 反派专用
+  // 结构：{ original: string, polished?: string, previewImageUrl?: string }
+  // 示例：{ original: "说话前用舌头顶一下腮帮子", polished: "..." }
+  microAction?: VisualDescriptionField;
+
+  // 【新增】标志性姿态 - 所有主要角色
+  // 结构：{ original: string, polished?: string, previewImageUrl?: string }
+  // 示例：{ original: "靠在墙上，眼神不聚焦，仿佛无视一切", polished: "..." }
+  signaturePose?: VisualDescriptionField;
+
+  // 【新增】角色视觉描述增强 - S级视觉描写
+  // 用于更细致的角色外观描述（发型、身材比例、手部动作等）
+  enhancedVisualDescription?: {
+    headAndHair?: string;      // 头部/发型具体描述
+    upperBody?: string;        // 上半身/S形剪影等
+    hands?: string;            // 手部动作习惯
+    walkingPattern?: string;   // 行走姿态
+  };
+}
+
+export interface Scene {
+  id: string;
+  location: string;
+  time: string;
+  atmosphere: string;
+  visualPrompt?: string;
+  negativePrompt?: string;
+  imageUrl?: string;
+  status?: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+/**
+ * 道具/物品 - 用于保持多分镜间物品视觉一致性
+ * 如星图、武器、地图、信件等需要在多个镜头中重复出现的物品
+ */
+export interface Prop {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  visualPrompt?: string;
+  negativePrompt?: string;
+  imageUrl?: string;
+  status?: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+export type AssetLibraryItemType = 'character' | 'scene' | 'prop' | 'turnaround';
+
+export interface AssetLibraryItem {
+  id: string;
+  type: AssetLibraryItemType;
+  name: string;
+  projectId?: string;
+  projectName?: string;
+  createdAt: number;
+  updatedAt: number;
+  data: Character | Scene | Prop;
+}
+
+export interface Keyframe {
+  id: string;
+  type: 'start' | 'end';
+  visualPrompt: string;
+  imageUrl?: string; // 关键帧图像，存储为base64格式（data:image/png;base64,...）
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+export interface VideoInterval {
+  id: string;
+  startKeyframeId: string;
+  endKeyframeId: string;
+  duration: number;
+  motionStrength: number;
+  videoUrl?: string; // 视频数据，存储为base64格式（data:video/mp4;base64,...），避免URL过期问题
+  videoPrompt?: string; // 视频生成时使用的提示词
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+/**
+ * 九宫格分镜预览 - 单个面板数据
+ */
+export interface NineGridPanel {
+  index: number;           // 0-8, 九宫格位置索引
+  shotSize: string;        // 景别：特写/近景/中景/全景/远景 等
+  cameraAngle: string;     // 机位角度：俯拍/仰拍/平视/斜拍 等
+  description: string;     // 该格子的视觉描述
+}
+
+/**
+ * 九宫格分镜预览数据
+ */
+export interface NineGridData {
+  panels: NineGridPanel[];  // 9个格子的描述数据
+  imageUrl?: string;        // 生成的九宫格图片 (base64)
+  prompt?: string;          // 生成时使用的完整提示词
+  status: 'pending' | 'generating_panels' | 'panels_ready' | 'generating_image' | 'completed' | 'failed';
+  // generating_panels: AI正在生成9个镜头描述
+  // panels_ready: 镜头描述已生成，等待用户确认/编辑后再生成图片
+  // generating_image: 用户已确认，正在生成九宫格图片
+}
+
+export interface Shot {
+  id: string;
+  sceneId: string;
+  actionSummary: string;
+  dialogue?: string; 
+  cameraMovement: string;
+  shotSize?: string; 
+  characters: string[]; // Character IDs
+  characterVariations?: { [characterId: string]: string }; // Added: Map char ID to variation ID for this shot
+  props?: string[]; // 道具ID数组，引用 ScriptData.props 中的道具
+  keyframes: Keyframe[];
+  interval?: VideoInterval;
+  videoModel?: string; // 视频模型 ID，由 modelRegistry 管理
+  nineGrid?: NineGridData; // 可选的九宫格分镜预览数据（高级功能）
+}
+
+/**
+ * 全局美术指导文档 - 用于统一所有角色和场景的视觉风格
+ * 在生成任何角色/场景提示词之前，先由 AI 根据剧本内容生成此文档，
+ * 后续所有视觉提示词生成都以此为约束，确保风格一致性。
+ */
+export interface ArtDirection {
+  /** 全局色彩方案 */
+  colorPalette: {
+    primary: string;      // 主色调描述
+    secondary: string;    // 辅色调
+    accent: string;       // 点缀色
+    skinTones: string;    // 肤色范围描述
+    saturation: string;   // 整体饱和度倾向
+    temperature: string;  // 整体色温倾向
+  };
+  /** 角色设计统一规则 */
+  characterDesignRules: {
+    proportions: string;   // 头身比、体型风格
+    eyeStyle: string;      // 眼睛画法统一
+    lineWeight: string;    // 线条粗细风格
+    detailLevel: string;   // 细节密度级别
+  };
+  /** 统一光影处理方式 */
+  lightingStyle: string;
+  /** 材质/质感风格 */
+  textureStyle: string;
+  /** 3-5个核心风格关键词 */
+  moodKeywords: string[];
+  /** 一段统一风格的文字锚点描述，所有提示词生成时注入 */
+  consistencyAnchors: string;
+}
+
+export interface ScriptData {
+  title: string;
+  genre: string;
+  logline: string;
+  targetDuration?: string;
+  language?: string;
+  visualStyle?: string; // Visual style: live-action, anime, 3d-animation, etc.
+  shotGenerationModel?: string; // Model used for shot generation
+  artDirection?: ArtDirection; // 全局美术指导文档，用于统一角色和场景的视觉风格
+  characters: Character[];
+  scenes: Scene[];
+  props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
+  storyParagraphs: { id: number; text: string; sceneRefId: string }[];
+}
+
+export interface RenderLog {
+  id: string;
+  timestamp: number; // Unix timestamp when API was called
+  type: 'character' | 'character-variation' | 'scene' | 'prop' | 'keyframe' | 'video' | 'script-parsing';
+  resourceId: string; // ID of the resource being generated
+  resourceName: string; // Human-readable name
+  status: 'success' | 'failed';
+  model: string; // Model used (e.g., 'imagen-3', 'veo_3_1_i2v_s_fast_fl_landscape', 'gpt-41')
+  prompt?: string; // The prompt used (optional, for debugging)
+  error?: string; // Error message if failed
+  inputTokens?: number; // Input tokens consumed
+  outputTokens?: number; // Output tokens generated
+  totalTokens?: number; // Total tokens (if available from API)
+  duration?: number; // Time taken in milliseconds
+}
+
+export interface ProjectState {
+  id: string;
+  title: string;
+  createdAt: number;
+  lastModified: number;
+  version: number;
+  stage: 'script' | 'assets' | 'director' | 'editor' | 'export' | 'prompts' | 'canvas';
+  
+  // Script Phase Data
+  rawScript: string;
+  targetDuration: string;
+  language: string;
+  visualStyle: string; // Visual style: live-action, anime, 3d-animation, etc.
+  shotGenerationModel: string; // Model for shot generation
+  
+  scriptData: ScriptData | null;
+  shots: Shot[];
+  isParsingScript: boolean;
+  renderLogs: RenderLog[]; // History of all API calls for this project
+}
+
+// ============================================
+// 横竖屏与视频时长类型
+// 注意：模型配置相关类型已迁移至 types/model.ts
+// ============================================
+
+/**
+ * 横竖屏比例类型
+ * - 16:9: 横屏（默认）
+ * - 9:16: 竖屏
+ * - 1:1: 方形
+ */
+export type AspectRatio = '16:9' | '9:16' | '1:1';
+
+/**
+ * 视频时长类型（仅异步视频模型支持）
+ */
+export type VideoDuration = 4 | 8 | 12;

@@ -1,0 +1,573 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Plus, Trash2, Loader2, Folder, ChevronRight, Calendar, AlertTriangle, X, HelpCircle, Cpu, Archive, Database, Settings, Sun, Moon, LogOut, User } from 'lucide-react';
+import { ProjectState, AssetLibraryItem } from '../types';
+import { getAllProjectsMetadata, createNewProjectState, deleteProjectFromDB, exportIndexedDBData, importIndexedDBData, loadProjectFromDB, saveProjectToDB } from '../services/storageService';
+import { hybridStorage } from '../services/hybridStorageService';
+import { AssetLibraryPage } from '../src/components/AssetLibrary';
+import { applyLibraryItemToProject } from '../services/assetLibraryService';
+import { useAlert } from './GlobalAlert';
+import { useTheme } from '../contexts/ThemeContext';
+import { useAuthStore } from '../src/stores/authStore';
+import { useTranslation } from 'react-i18next';
+import LanguageSwitcher from '../src/components/LanguageSwitcher';
+import qrCodeImg from '../images/qrcode.jpg';
+import DebugExportModal from './DebugExportModal';
+import logger, { LogCategory } from '@/services/logger';
+
+interface Props {
+  onOpenProject: (projectId: string | ProjectState) => void;
+  onShowOnboarding?: () => void;
+  onShowModelConfig?: () => void;
+}
+
+const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowModelConfig }) => {
+  const { showAlert } = useAlert();
+  const { theme, toggleTheme } = useTheme();
+  const { user, signOut } = useAuthStore();
+  const { t } = useTranslation();
+  const [projects, setProjects] = useState<ProjectState[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  // const [showGroupQr, setShowGroupQr] = useState(false);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showDebugModal, setShowDebugModal] = useState(false);
+  const [isDataExporting, setIsDataExporting] = useState(false);
+  const [isDataImporting, setIsDataImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const isLoadingRef = useRef(false);
+
+  const loadProjects = async () => {
+    // 防止重复加载
+    if (isLoadingRef.current) {
+      console.log('[Dashboard] ⚠️ 正在加载项目，跳过重复请求');
+      return;
+    }
+    
+    console.log('[Dashboard] 📋 开始加载项目列表...');
+    console.log('[Dashboard] 当前用户:', user?.id);
+    isLoadingRef.current = true;
+    setIsLoading(true);
+    
+    try {
+      console.log('[Dashboard] 📡 调用 hybridStorage.getAllProjects()...');
+      const list = await hybridStorage.getAllProjects();
+      console.log(`[Dashboard] ✅ 加载完成，获取到 ${list.length} 个项目`);
+      console.log('[Dashboard] 项目列表:', list.map(p => ({ id: p.id, title: p.title, version: p.version })));
+      setProjects(list);
+    } catch (e) {
+      console.error('[Dashboard] ❌ 加载项目失败:', e);
+      console.error('[Dashboard] 错误详情:', e instanceof Error ? e.stack : String(e));
+      // 即使失败也重置状态，允许重新加载
+    } finally {
+      console.log('[Dashboard] 🔚 加载流程结束，重置状态');
+      setIsLoading(false);
+      // 立即重置 loading 标志，不等待延迟
+      isLoadingRef.current = false;
+      console.log('[Dashboard] ✅ isLoadingRef 已重置');
+    }
+  };
+
+  // 安全机制：如果加载状态卡住，定期重置
+  useEffect(() => {
+    const checkStuck = () => {
+      if (isLoadingRef.current && isLoading) {
+        console.log('[Dashboard] 检测到加载卡住，强制重置...');
+        isLoadingRef.current = false;
+        setIsLoading(false);
+      }
+    };
+    
+    const intervalId = setInterval(checkStuck, 5000);
+    return () => clearInterval(intervalId);
+  }, [isLoading]);
+
+  useEffect(() => {
+    loadProjects();
+  }, [user]); // 依赖 user，登录后自动刷新
+
+  // 监听云端同步完成事件
+  useEffect(() => {
+    const handleSync = () => {
+      loadProjects();
+    };
+    window.addEventListener('projects-synced', handleSync);
+    return () => window.removeEventListener('projects-synced', handleSync);
+  }, []);
+
+  // 监听后台刷新完成事件
+  useEffect(() => {
+    const handleRefresh = (event: CustomEvent<ProjectState[]>) => {
+      console.log('[Dashboard] 📢 收到后台刷新事件，更新项目列表');
+      console.log('[Dashboard] 新项目数量:', event.detail.length);
+      console.log('[Dashboard] 新项目列表:', event.detail.map(p => ({ id: p.id, title: p.title })));
+      setProjects(event.detail);
+    };
+    window.addEventListener('projects-refreshed', handleRefresh as EventListener);
+    return () => window.removeEventListener('projects-refreshed', handleRefresh as EventListener);
+  }, []);
+
+  const handleCreate = () => {
+    const newProject = createNewProjectState();
+    onOpenProject(newProject);
+  };
+
+  const requestDelete = (e: React.MouseEvent, id: string) => {
+    // 验证项目ID
+    if (!id) {
+      console.error('❌ 无法删除项目: 项目ID无效');
+      return;
+    }
+    e.stopPropagation();
+    setDeleteConfirmId(id);
+  };
+
+  const cancelDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeleteConfirmId(null);
+  };
+
+  const confirmDelete = async (e: React.MouseEvent, id: string) => {
+    // 验证项目ID
+    if (!id) {
+      console.error('❌ 无法删除项目: 项目ID无效');
+      showAlert('无法删除项目: 项目ID无效', { type: 'error' });
+      return;
+    }
+    
+    e.stopPropagation();
+    
+    // 获取项目名称用于提示
+    const project = projects.find(p => p.id === id);
+    const projectName = project?.title || '未命名项目';
+    
+    try {
+        await hybridStorage.deleteProject(id);
+        // 强制重置 loading 状态，确保能刷新
+        isLoadingRef.current = false;
+        console.log('💾 重新加载项目列表...');
+        await loadProjects();
+        console.log(`✅ 项目 "${projectName}" 已成功删除`);
+        
+        // 可选：添加成功提示（如果不想打扰用户可以注释掉）
+        // alert(`项目 "${projectName}" 已删除`);
+    } catch (error) {
+        console.error("❌ 删除项目失败:", error);
+        showAlert(`删除项目失败: ${error instanceof Error ? error.message : '未知错误'}\n\n请检查浏览器控制台查看详细信息`, { type: 'error' });
+    } finally {
+        setDeleteConfirmId(null);
+    }
+  };
+
+  const formatDate = (ts: number) => {
+    return new Date(ts).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  };
+
+  const handleSelectProjectAndImport = async (projectId: string, item: AssetLibraryItem) => {
+    try {
+      const project = await loadProjectFromDB(projectId);
+      const updated = applyLibraryItemToProject(project, item);
+      await saveProjectToDB(updated);
+      onOpenProject(updated);
+    } catch (error) {
+      showAlert(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`, { type: 'error' });
+    }
+  };
+
+  const handleExportData = async () => {
+    if (isDataExporting) return;
+
+    setIsDataExporting(true);
+    try {
+      const payload = await exportIndexedDBData();
+      const json = JSON.stringify(payload, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `wl_backup_${timestamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showAlert('导出完成，备份文件已下载。', { type: 'success' });
+    } catch (error) {
+      console.error('Export failed:', error);
+      showAlert(`导出失败: ${error instanceof Error ? error.message : '未知错误'}`, { type: 'error' });
+    } finally {
+      setIsDataExporting(false);
+    }
+  };
+
+  const handleImportData = () => {
+    if (isDataImporting) return;
+    importInputRef.current?.click();
+  };
+
+  const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (!file.name.endsWith('.json')) {
+      showAlert('请选择 .json 备份文件。', { type: 'warning' });
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const projectCount = payload?.stores?.projects?.length || 0;
+      const assetCount = payload?.stores?.assetLibrary?.length || 0;
+      const confirmMessage = `将导入 ${projectCount} 个项目和 ${assetCount} 个资产。若 ID 冲突将覆盖现有数据。是否继续？`;
+
+      showAlert(confirmMessage, {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: async () => {
+          try {
+            setIsDataImporting(true);
+            const result = await importIndexedDBData(payload, { mode: 'merge' });
+            await loadProjects();
+            showAlert(`导入完成：项目 ${result.projects} 个，资产 ${result.assets} 个。`, { type: 'success' });
+          } catch (error) {
+            console.error('Import failed:', error);
+            showAlert(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`, { type: 'error' });
+          } finally {
+            setIsDataImporting(false);
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Import failed:', error);
+      showAlert(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`, { type: 'error' });
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[var(--bg-base)] text-[var(--text-secondary)] p-8 md:p-12 font-sans selection:bg-[var(--selection-bg)]">
+      <div className="max-w-7xl mx-auto">
+        <header className="mb-16 border-b border-[var(--border-subtle)] pb-8 flex items-end justify-between">
+          <div>
+            <h1 className="text-3xl font-light text-[var(--text-primary)] tracking-tight mb-2 flex items-center gap-3">
+              项目库
+              <span className="text-[var(--text-muted)] text-lg">/</span>
+              <span className="text-[var(--text-muted)] text-sm font-mono tracking-widest uppercase">{t('dashboard.subtitle')}</span>
+            </h1>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* <button
+              onClick={() => setShowGroupQr(true)}
+              className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
+              title={t('group.join')}
+            >
+              <span className="font-medium text-xs tracking-widest uppercase">{t('group.join')}</span>
+            </button> */}
+            {onShowOnboarding && (
+              <button 
+                onClick={onShowOnboarding}
+                className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
+                title={t('onboarding.viewGuide')}
+              >
+                <HelpCircle className="w-4 h-4" />
+                <span className="font-medium text-xs tracking-widest uppercase">帮助</span>
+              </button>
+            )}
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="font-medium text-xs tracking-widest uppercase">系统设置</span>
+            </button>
+            {user && (
+              <div className="flex items-center gap-2 px-3 py-2 border border-[var(--border-primary)] bg-[var(--bg-surface)]">
+                <User className="w-4 h-4 text-[var(--text-tertiary)]" />
+                <span className="text-xs text-[var(--text-tertiary)] max-w-[150px] truncate">
+                  {user.email}
+                </span>
+                <button
+                  onClick={signOut}
+                  className="p-1 hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--error-text)] transition-colors"
+                  title="退出登录"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+            <button
+              onClick={toggleTheme}
+              className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
+              title={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              <span className="font-medium text-xs tracking-widest uppercase">{theme === 'dark' ? '亮色' : '暗色'}</span>
+            </button>
+            <LanguageSwitcher />
+            <button 
+              onClick={handleCreate}
+              className="group flex items-center gap-3 px-6 py-3 bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] hover:bg-[var(--btn-primary-hover)] transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="font-bold text-xs tracking-widest uppercase">新建项目</span>
+            </button>
+          </div>
+        </header>
+
+        {isLoading ? (
+          <div className="flex justify-center py-20">
+            <Loader2 className="w-6 h-6 text-[var(--text-muted)] animate-spin" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            
+            {/* Create New Card */}
+            <div 
+              onClick={handleCreate}
+              className="group cursor-pointer border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] flex flex-col items-center justify-center min-h-[280px] transition-all"
+            >
+              <div className="w-12 h-12 border border-[var(--border-secondary)] flex items-center justify-center mb-6 group-hover:bg-[var(--bg-hover)] transition-colors">
+                <Plus className="w-5 h-5 text-[var(--text-tertiary)] group-hover:text-[var(--text-primary)]" />
+              </div>
+              <span className="text-[var(--text-muted)] font-mono text-[10px] uppercase tracking-widest group-hover:text-[var(--text-secondary)]">Create New Project</span>
+            </div>
+
+            {/* Project List */}
+            {projects.map((proj) => (
+              <div 
+                key={proj.id}
+                onClick={() => onOpenProject(proj.id)}
+                className="group bg-[var(--bg-primary)] border border-[var(--border-primary)] hover:border-[var(--border-secondary)] p-0 flex flex-col cursor-pointer transition-all relative overflow-hidden h-[280px]"
+              >
+                  {/* Delete Confirmation Overlay */}
+                  {deleteConfirmId === proj.id && (
+                    <div 
+                        className="absolute inset-0 z-20 bg-[var(--bg-primary)] flex flex-col items-center justify-center p-6 space-y-4 animate-in fade-in duration-200"
+                        onClick={(e) => e.stopPropagation()} 
+                    >
+                        <div className="w-10 h-10 bg-[var(--error-hover-bg)] flex items-center justify-center rounded-full">
+                           <AlertTriangle className="w-5 h-5 text-[var(--error)]" />
+                        </div>
+                        <div className="text-center space-y-2">
+                            <p className="text-[var(--text-primary)] font-bold text-xs uppercase tracking-widest">确认删除项目？</p>
+                            <p className="text-[var(--text-tertiary)] text-[10px] font-mono">此操作无法撤销</p>
+                            <div className="text-[9px] text-[var(--text-muted)] space-y-1 pt-2 border-t border-[var(--border-subtle)]">
+                              <p>将同时删除以下所有资源：</p>
+                              <p className="text-[var(--text-muted)] font-mono">· 角色和场景参考图</p>
+                              <p className="text-[var(--text-muted)] font-mono">· 所有关键帧图像</p>
+                              <p className="text-[var(--text-muted)] font-mono">· 所有生成的视频片段</p>
+                              <p className="text-[var(--text-muted)] font-mono">· 渲染历史记录</p>
+                            </div>
+                        </div>
+                        <div className="flex gap-2 w-full pt-2">
+                            <button 
+                                onClick={cancelDelete}
+                                className="flex-1 py-3 bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[10px] font-bold uppercase tracking-wider transition-colors border border-[var(--border-primary)]"
+                            >
+                                取消
+                            </button>
+                            <button 
+                                onClick={(e) => confirmDelete(e, proj.id)}
+                                className="flex-1 py-3 bg-[var(--error-hover-bg)] hover:bg-[var(--error-hover-bg-strong)] text-[var(--error-text)] hover:text-[var(--error-text)] text-[10px] font-bold uppercase tracking-wider transition-colors border border-[var(--error-border)]"
+                            >
+                                永久删除
+                            </button>
+                        </div>
+
+                    </div>
+                  )}
+
+                  {/* Normal Content */}
+                  <div className="flex-1 p-6 relative flex flex-col">
+                     {/* Delete Button */}
+                     <button 
+                        onClick={(e) => requestDelete(e, proj.id)}
+                        className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--error-text)] transition-all rounded-sm z-10"
+                        title="删除项目"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+
+                     <div className="flex-1">
+                        <Folder className="w-8 h-8 text-[var(--text-muted)] mb-6 group-hover:text-[var(--text-tertiary)] transition-colors" />
+                        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-2 line-clamp-1 tracking-wide">{proj.title}</h3>
+                        <div className="flex flex-wrap gap-2 mb-4">
+                            <span className="text-[9px] font-mono text-[var(--text-tertiary)] border border-[var(--border-primary)] px-1.5 py-0.5 uppercase tracking-wider">
+                              {proj.stage === 'script' ? '剧本阶段' : 
+                               proj.stage === 'assets' ? '资产生成' :
+                               proj.stage === 'director' ? '导演工作台' : '导出阶段'}
+                            </span>
+                        </div>
+                        {proj.scriptData?.logline && (
+                            <p className="text-[10px] text-[var(--text-muted)] line-clamp-2 leading-relaxed font-mono border-l border-[var(--border-primary)] pl-2">
+                            {proj.scriptData.logline}
+                            </p>
+                        )}
+                     </div>
+                  </div>
+
+                  <div className="px-6 py-3 border-t border-[var(--border-subtle)] flex items-center justify-between bg-[var(--bg-sunken)]">
+                    <div className="flex items-center gap-2 text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-widest">
+                        <Calendar className="w-3 h-3" />
+                        {formatDate(proj.lastModified)}
+                    </div>
+                    <ChevronRight className="w-3 h-3 text-[var(--text-muted)] group-hover:text-[var(--text-primary)] transition-colors" />
+                  </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Group QR Modal */}
+      {/* {showGroupQr && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-base)]/70 p-6" onClick={() => setShowGroupQr(false)}>
+          <div
+            className="relative w-full max-w-md bg-[var(--bg-primary)] border border-[var(--border-primary)] p-6 md:p-8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowGroupQr(false)}
+              className="absolute right-4 top-4 p-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+              title="关闭"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="space-y-4 text-center">
+              <div className="text-[var(--text-primary)] text-sm font-bold tracking-widest uppercase">加入交流群</div>
+              <div className="text-[10px] text-[var(--text-tertiary)] font-mono">扫码进入产品体验群</div>
+              <div className="inline-block">
+                <img src={qrCodeImg} alt="交流群二维码" className="w-64 h-64 object-contain" />
+              </div>
+              <div className="text-[10px] text-[var(--text-muted)] font-mono">二维码有效期请以实际为准</div>
+            </div>
+          </div>
+        </div>
+      )} */}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-base)]/70 p-6" onClick={() => setShowSettingsModal(false)}>
+          <div
+            className="relative w-full max-w-xl bg-[var(--bg-primary)] border border-[var(--border-primary)] p-6 md:p-8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowSettingsModal(false)}
+              className="absolute right-4 top-4 p-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+              title="关闭"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="flex items-end justify-between border-b border-[var(--border-subtle)] pb-4 mb-6">
+              <div>
+                <h2 className="text-lg text-[var(--text-primary)] flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-[var(--accent-text)]" />
+                  系统设置
+                  <span className="text-[var(--text-muted)] text-xs font-mono uppercase tracking-widest">Settings</span>
+                </h2>
+                <p className="text-xs text-[var(--text-tertiary)] mt-2">管理模型配置、资产库以及数据导入导出</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {onShowModelConfig && (
+                <button
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    onShowModelConfig();
+                  }}
+                  className="p-4 border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-secondary)] transition-colors text-left"
+                >
+                  <div className="flex items-center gap-2 text-[var(--text-primary)] text-sm font-bold">
+                    <Cpu className="w-4 h-4 text-[var(--accent-text)]" />
+                    模型配置
+                  </div>
+                  <div className="text-[10px] text-[var(--text-tertiary)] font-mono mt-2">管理模型与 API 设置</div>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setShowSettingsModal(false);
+                  setShowLibraryModal(true);
+                }}
+                className="p-4 border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-secondary)] transition-colors text-left"
+              >
+                <div className="flex items-center gap-2 text-[var(--text-primary)] text-sm font-bold">
+                  <Archive className="w-4 h-4 text-[var(--accent-text)]" />
+                  资产库
+                </div>
+                <div className="text-[10px] text-[var(--text-tertiary)] font-mono mt-2">浏览并复用角色与场景资产</div>
+              </button>
+
+              <button
+                onClick={handleExportData}
+                disabled={isDataExporting}
+                className="p-4 border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-secondary)] transition-colors text-left disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <div className="flex items-center gap-2 text-[var(--text-primary)] text-sm font-bold">
+                  <Database className="w-4 h-4 text-[var(--accent-text)]" />
+                  导出数据
+                </div>
+                <div className="text-[10px] text-[var(--text-tertiary)] font-mono mt-2">导出全部项目与资产库备份</div>
+              </button>
+
+              <button
+                onClick={handleImportData}
+                disabled={isDataImporting}
+                className="p-4 border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-secondary)] transition-colors text-left disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <div className="flex items-center gap-2 text-[var(--text-primary)] text-sm font-bold">
+                  <Database className="w-4 h-4 text-[var(--accent-text)]" />
+                  导入数据
+                </div>
+                <div className="text-[10px] text-[var(--text-tertiary)] font-mono mt-2">导入全部项目与资产库备份</div>
+              </button>
+
+              <button
+                onClick={() => {
+                  console.log('[Dashboard] 🔧 点击数据库调试按钮');
+                  setShowSettingsModal(false);
+                  setShowDebugModal(true);
+                  console.log('[Dashboard] ✅ 调试模态框状态已设置');
+                }}
+                className="p-4 border border-[var(--border-primary)] hover:border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-secondary)] transition-colors text-left"
+              >
+                <div className="flex items-center gap-2 text-[var(--text-primary)] text-sm font-bold">
+                  <Database className="w-4 h-4 text-[var(--accent-text)]" />
+                  数据库调试
+                </div>
+                <div className="text-[10px] text-[var(--text-tertiary)] font-mono mt-2">导出本地数据库用于调试</div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <AssetLibraryPage
+        isOpen={showLibraryModal}
+        onClose={() => setShowLibraryModal(false)}
+        projects={projects}
+        onSelectProjectAndImport={handleSelectProjectAndImport}
+      />
+
+
+      <input
+        ref={importInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={handleImportFileChange}
+      />
+
+      {/* Debug Export Modal */}
+      <DebugExportModal isOpen={showDebugModal} onClose={() => setShowDebugModal(false)} />
+    </div>
+  );
+};
+
+export default Dashboard;

@@ -1,0 +1,39 @@
+name: Code Quality Check
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - '**.ts'
+      - '**.js'
+      - '**.json'
+      - '**.css'
+      - '!dist/**'
+      - '!cypress/**'
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - '**.ts'
+      - '**.js'
+      - '**.json'
+      - '**.css'
+      - '!dist/**'
+      - '!cypress/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install Dependencies
+        run: bun install
+      - name: Lint
+        run: bun run lint
+      - name: Type Check
+        run: bun run check

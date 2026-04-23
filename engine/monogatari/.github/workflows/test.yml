@@ -1,0 +1,45 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - '**.ts'
+      - '**.js'
+      - '**.json'
+      - '**.css'
+      - '**/test.yml'
+      - '!dist/**'
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - '**.ts'
+      - '**.js'
+      - '**.json'
+      - '**.css'
+      - '!dist/**'
+
+jobs:
+  cypress-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install Dependencies
+        run: bun install
+      - name: Build
+        run: bun run build
+      - name: Start Server
+        run: bunx serve dist -l 8080 &
+      - name: Wait for Server
+        run: bunx wait-on http://localhost:8080
+      - name: Run Cypress Tests
+        run: bunx cypress run --record --browser chrome
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

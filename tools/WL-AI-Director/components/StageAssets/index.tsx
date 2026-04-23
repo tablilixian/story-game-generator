@@ -1,0 +1,1826 @@
+import React, { useState, useEffect } from 'react';
+import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, Package } from 'lucide-react';
+import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, AssetLibraryItemType, CharacterTurnaroundPanel } from '../../types';
+import { 
+  generateImage, 
+  generateCharacterVisualPrompt, 
+  generateSceneVisualPrompt,
+  generateCharacterTurnaroundPanels, 
+  generateCharacterTurnaroundImage 
+} from '../../services/aiService';
+import { imageStorageService } from '../../services/imageStorageService';
+import { unifiedImageService } from '../../services/unifiedImageService';
+import { 
+  getRegionalPrefix, 
+  handleImageUpload, 
+  getProjectLanguage, 
+  getProjectVisualStyle,
+  delay,
+  generateId,
+  compareIds 
+} from './utils';
+import { getActiveChatModel, getDefaultChatModelId } from '../../services/aiService';
+import { DEFAULTS, STYLES, GRID_LAYOUTS } from './constants';
+import ImagePreviewModal from './ImagePreviewModal';
+import CharacterCard from './CharacterCard';
+import SceneCard from './SceneCard';
+import PropCard from './PropCard';
+import WardrobeModal from './WardrobeModal';
+import TurnaroundModal from './TurnaroundModal';
+import { useAlert } from '../GlobalAlert';
+import { useImageLoader } from '../../hooks/useImageLoader';
+
+import { applyLibraryItemToProject, createLibraryItemFromCharacter, createLibraryItemFromScene, createLibraryItemFromProp, createLibraryItemFromTurnaround, cloneCharacterForProject } from '../../services/assetLibraryService';
+import { hybridStorage } from '../../services/hybridStorageService';
+import { AssetLibraryModal } from '../../src/components/AssetLibrary';
+import { AspectRatioSelector } from '../AspectRatioSelector';
+import { getUserAspectRatio, setUserAspectRatio, getActiveImageModel } from '../../services/modelRegistry';
+import { useAuthStore } from '../../src/stores/authStore';
+
+interface Props {
+  project: ProjectState;
+  updateProject: (updates: Partial<ProjectState> | ((prev: ProjectState) => ProjectState)) => void;
+  onApiKeyError?: (error: any) => boolean;
+  onGeneratingChange?: (isGenerating: boolean) => void;
+}
+  
+const AssetLibraryImage: React.FC<{ imageUrl: string | undefined; alt: string; type: AssetLibraryItemType }> = ({ imageUrl, alt, type }) => {
+  const { src, loading } = useImageLoader(imageUrl);
+  
+  if (loading) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-[var(--text-muted)]">
+        <Loader2 className="w-5 h-5 animate-spin" />
+      </div>
+    );
+  }
+  
+  if (!src) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-[var(--text-muted)]">
+        {type === 'character' || type === 'turnaround' ? (
+          <Users className="w-8 h-8 opacity-30" />
+        ) : type === 'scene' ? (
+          <MapPin className="w-8 h-8 opacity-30" />
+        ) : (
+          <Package className="w-8 h-8 opacity-30" />
+        )}
+      </div>
+    );
+  }
+  
+  return <img src={src} alt={alt} className="w-full h-full object-cover" />;
+};
+
+const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
+  const { showAlert } = useAlert();
+  const { user } = useAuthStore();
+  const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
+  const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
+  const [replaceTargetCharId, setReplaceTargetCharId] = useState<string | null>(null);
+  const [replaceTargetSceneId, setReplaceTargetSceneId] = useState<string | null>(null);
+  const [replaceTargetPropId, setReplaceTargetPropId] = useState<string | null>(null);
+  const [turnaroundCharId, setTurnaroundCharId] = useState<string | null>(null);
+  
+  // 横竖屏选择状态（从持久化配置读取）
+  const [aspectRatio, setAspectRatioState] = useState<AspectRatio>(() => getUserAspectRatio());
+  
+  // 包装 setAspectRatio，同时持久化到模型配置
+  const setAspectRatio = (ratio: AspectRatio) => {
+    setAspectRatioState(ratio);
+    setUserAspectRatio(ratio);
+  };
+  
+
+  // 获取项目配置
+  const language = getProjectLanguage(project.language, project.scriptData?.language);
+  const visualStyle = getProjectVisualStyle(project.visualStyle, project.scriptData?.visualStyle);
+  const genre = project.scriptData?.genre || DEFAULTS.genre;
+
+  /**
+   * 组件加载时，检测并重置卡住的生成状态
+   * 解决关闭页面后重新打开时，状态仍为"generating"导致无法重新生成的问题
+   */
+  useEffect(() => {
+    if (!project.scriptData) return;
+
+    const hasStuckCharacters = project.scriptData.characters.some(char => {
+      const isCharStuck = char.status === 'generating' && !char.imageUrl;
+      const hasStuckVariations = char.variations?.some(v => v.status === 'generating' && !v.imageUrl);
+      return isCharStuck || hasStuckVariations;
+    });
+
+    const hasStuckScenes = project.scriptData.scenes.some(scene => 
+      scene.status === 'generating' && !scene.imageUrl
+    );
+
+    const hasStuckProps = (project.scriptData.props || []).some(prop =>
+      prop.status === 'generating' && !prop.imageUrl
+    );
+
+    if (hasStuckCharacters || hasStuckScenes || hasStuckProps) {
+      console.log('🔧 检测到卡住的生成状态，正在重置...');
+      const newData = { ...project.scriptData };
+      
+      newData.characters = newData.characters.map(char => ({
+        ...char,
+        status: char.status === 'generating' && !char.imageUrl ? 'failed' as const : char.status,
+        variations: char.variations?.map(v => ({
+          ...v,
+          status: v.status === 'generating' && !v.imageUrl ? 'failed' as const : v.status
+        }))
+      }));
+      
+      newData.scenes = newData.scenes.map(scene => ({
+        ...scene,
+        status: scene.status === 'generating' && !scene.imageUrl ? 'failed' as const : scene.status
+      }));
+
+      if (newData.props) {
+        newData.props = newData.props.map(prop => ({
+          ...prop,
+          status: prop.status === 'generating' && !prop.imageUrl ? 'failed' as const : prop.status
+        }));
+      }
+      
+      updateProject({ scriptData: newData });
+    }
+  }, [project.id]);
+
+  // 定期检测卡住的生成状态（每30秒检测一次）
+  useEffect(() => {
+    if (!project.scriptData) return;
+    
+    const checkStuckGeneration = () => {
+      const stuckChars = project.scriptData!.characters.filter(c => c.status === 'generating' && !c.imageUrl);
+      const stuckScenes = project.scriptData!.scenes.filter(s => s.status === 'generating' && !s.imageUrl);
+      const stuckProps = (project.scriptData!.props || []).filter(p => p.status === 'generating' && !p.imageUrl);
+      
+      if (stuckChars.length > 0 || stuckScenes.length > 0 || stuckProps.length > 0) {
+        console.log('🔧 检测到卡住的生成状态，自动重置...');
+        const newData = { ...project.scriptData! };
+        
+        newData.characters = newData.characters.map(char => ({
+          ...char,
+          status: char.status === 'generating' && !char.imageUrl ? 'failed' as const : char.status,
+          variations: char.variations?.map(v => ({
+            ...v,
+            status: v.status === 'generating' && !v.imageUrl ? 'failed' as const : v.status
+          }))
+        }));
+        
+        newData.scenes = newData.scenes.map(scene => ({
+          ...scene,
+          status: scene.status === 'generating' && !scene.imageUrl ? 'failed' as const : scene.status
+        }));
+        
+        if (newData.props) {
+          newData.props = newData.props.map(prop => ({
+            ...prop,
+            status: prop.status === 'generating' && !prop.imageUrl ? 'failed' as const : prop.status
+          }));
+        }
+        
+        updateProject({ scriptData: newData });
+      }
+    };
+    
+    const intervalId = setInterval(checkStuckGeneration, 30000);
+    return () => clearInterval(intervalId);
+  }, [project.id]);
+
+  /**
+   * 上报生成状态给父组件，用于导航锁定
+   * 检测角色、场景、道具、角色变体的生成状态
+   */
+  useEffect(() => {
+    const hasGeneratingCharacters = project.scriptData?.characters.some(char => {
+      const isCharGenerating = char.status === 'generating';
+      const hasGeneratingVariations = char.variations?.some(v => v.status === 'generating');
+      return isCharGenerating || hasGeneratingVariations;
+    }) ?? false;
+
+    const hasGeneratingScenes = project.scriptData?.scenes.some(scene => 
+      scene.status === 'generating'
+    ) ?? false;
+
+    const hasGeneratingProps = (project.scriptData?.props || []).some(prop =>
+      prop.status === 'generating'
+    );
+
+    const generating = !!batchProgress || hasGeneratingCharacters || hasGeneratingScenes || hasGeneratingProps;
+    onGeneratingChange?.(generating);
+  }, [batchProgress, project.scriptData]);
+
+  // 组件卸载时重置生成状态
+  useEffect(() => {
+    return () => {
+      onGeneratingChange?.(false);
+    };
+  }, []);
+
+  const openLibrary = (filter: 'all' | 'character' | 'scene' | 'prop', targetType: 'character' | 'scene' | 'prop' | null = null, targetId: string | null = null) => {
+    if (targetType === 'character') {
+      setReplaceTargetCharId(targetId);
+      setReplaceTargetSceneId(null);
+      setReplaceTargetPropId(null);
+    } else if (targetType === 'scene') {
+      setReplaceTargetSceneId(targetId);
+      setReplaceTargetCharId(null);
+      setReplaceTargetPropId(null);
+    } else if (targetType === 'prop') {
+      setReplaceTargetPropId(targetId);
+      setReplaceTargetCharId(null);
+      setReplaceTargetSceneId(null);
+    } else {
+      setReplaceTargetCharId(null);
+      setReplaceTargetSceneId(null);
+      setReplaceTargetPropId(null);
+    }
+    setShowLibraryModal(true);
+  };
+
+  /**
+   * 生成资源（角色或场景）
+   */
+  const handleGenerateAsset = async (type: 'character' | 'scene', id: string) => {
+    // 设置生成状态
+    if (project.scriptData) {
+      const newData = { ...project.scriptData };
+      if (type === 'character') {
+        const c = newData.characters.find(c => compareIds(c.id, id));
+        if (c) c.status = 'generating';
+      } else {
+        const s = newData.scenes.find(s => compareIds(s.id, id));
+        if (s) s.status = 'generating';
+      }
+      updateProject({ scriptData: newData });
+    }
+    try {
+      let prompt = "";
+      
+      if (type === 'character') {
+        const char = project.scriptData?.characters.find(c => compareIds(c.id, id));
+        if (char) {
+          if (char.visualPrompt) {
+            prompt = char.visualPrompt;
+          } else {
+            const prompts = await generateCharacterVisualPrompt(char, project.scriptData?.artDirection, visualStyle, language);
+            prompt = prompts;
+            
+            // 保存生成的提示词
+            if (project.scriptData) {
+              const newData = { ...project.scriptData };
+              const c = newData.characters.find(c => compareIds(c.id, id));
+              if (c) {
+                c.visualPrompt = prompts;
+              }
+              updateProject({ scriptData: newData });
+            }
+          }
+        }
+      } else {
+        const scene = project.scriptData?.scenes.find(s => compareIds(s.id, id));
+        if (scene) {
+          if (scene.visualPrompt) {
+            prompt = scene.visualPrompt;
+          } else {
+            const prompts = await generateSceneVisualPrompt(scene, project.scriptData?.artDirection, visualStyle, language);
+            prompt = prompts;
+            
+            // 保存生成的提示词
+            if (project.scriptData) {
+              const newData = { ...project.scriptData };
+              const s = newData.scenes.find(s => compareIds(s.id, id));
+              if (s) {
+                s.visualPrompt = prompts;
+              }
+              updateProject({ scriptData: newData });
+            }
+          }
+        }
+      }
+
+      // 添加地域特征前缀
+      const regionalPrefix = getRegionalPrefix(language, type);
+      let enhancedPrompt = regionalPrefix + prompt;
+
+      // 场景图片：追加"纯环境/无人物"指令，避免生成人物干扰角色一致性
+      if (type === 'scene') {
+        enhancedPrompt += '. IMPORTANT: This is a pure environment/background scene with absolutely NO people, NO human figures, NO characters, NO silhouettes, NO crowds - empty scene only.';
+      }
+
+      const imageUrl = await generateImage(enhancedPrompt, [], aspectRatio, false, false, type, id);
+
+      if (project.scriptData) {
+        const newData = { ...project.scriptData };
+        if (type === 'character') {
+          const c = newData.characters.find(c => compareIds(c.id, id));
+          if (c) {
+            c.imageUrl = imageUrl;
+            c.status = 'completed';
+          }
+        } else {
+          const s = newData.scenes.find(s => compareIds(s.id, id));
+          if (s) {
+            s.imageUrl = imageUrl;
+            s.status = 'completed';
+          }
+        }
+        updateProject({ scriptData: newData }, { forceSync: true });
+      }
+
+    } catch (e: any) {
+      console.error(e);
+      // 设置失败状态
+      if (project.scriptData) {
+        const newData = { ...project.scriptData };
+        if (type === 'character') {
+          const c = newData.characters.find(c => compareIds(c.id, id));
+          if (c) c.status = 'failed';
+        } else {
+          const s = newData.scenes.find(s => compareIds(s.id, id));
+          if (s) s.status = 'failed';
+        }
+        updateProject({ scriptData: newData }, { forceSync: true });
+      }
+      if (onApiKeyError && onApiKeyError(e)) {
+        return;
+      }
+    }
+  };
+
+  /**
+   * 批量生成资源
+   */
+  const handleBatchGenerate = async (type: 'character' | 'scene') => {
+    const items = type === 'character' 
+      ? project.scriptData?.characters 
+      : project.scriptData?.scenes;
+    
+    if (!items) return;
+
+    const itemsToGen = items.filter(i => !i.imageUrl);
+    const isRegenerate = itemsToGen.length === 0;
+
+    if (isRegenerate) {
+      showAlert(`确定要重新生成所有${type === 'character' ? '角色' : '场景'}图吗？`, {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: async () => {
+          await executeBatchGenerate(items, type);
+        }
+      });
+      return;
+    }
+
+    await executeBatchGenerate(itemsToGen, type);
+  };
+
+  const executeBatchGenerate = async (targetItems: any[], type: 'character' | 'scene') => {
+    setBatchProgress({ current: 0, total: targetItems.length });
+
+    for (let i = 0; i < targetItems.length; i++) {
+      if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
+      
+      await handleGenerateAsset(type, targetItems[i].id);
+      setBatchProgress({ current: i + 1, total: targetItems.length });
+    }
+
+    setBatchProgress(null);
+  };
+
+  /**
+   * 上传角色图片
+   */
+  const handleUploadCharacterImage = async (charId: string, file: File) => {
+    try {
+      const imageUrl = await handleImageUpload(file);
+
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const char = newData.characters.find(c => compareIds(c.id, charId));
+        if (char) {
+          char.imageUrl = imageUrl;
+          char.status = 'completed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      showAlert(e.message, { type: 'error' });
+    }
+  };
+
+  const handleUploadSceneImage = async (sceneId: string, file: File) => {
+    try {
+      const imageUrl = await handleImageUpload(file);
+
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const scene = newData.scenes.find(s => compareIds(s.id, sceneId));
+        if (scene) {
+          scene.imageUrl = imageUrl;
+          scene.status = 'completed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      showAlert(e.message, { type: 'error' });
+    }
+  };
+
+  const handleAddCharacterToLibrary = async (char: Character) => {
+    const saveItem = async () => {
+      try {
+        let charToSave = { ...char };
+        
+        if (char.imageUrl?.startsWith('local:')) {
+          console.log('[StageAssets] ☁️ 上传本地图片到云端:', char.imageUrl);
+          const blob = await imageStorageService.getImage(char.imageUrl.substring(6));
+          if (!blob) {
+            console.warn('[StageAssets] ⚠️ 本地图片读取失败，将仅保存到本地');
+          } else {
+            try {
+              const cloudUrl = await imageStorageService.uploadToCloud(
+                char.imageUrl.substring(6),
+                blob,
+                `${user?.id || 'anonymous'}/asset_library/character/${char.id}`
+              );
+              charToSave.imageUrl = cloudUrl;
+              
+              const newData = { ...project.scriptData! };
+              const c = newData.characters.find(c => c.id === char.id);
+              if (c) {
+                c.imageUrl = cloudUrl;
+              }
+              updateProject({ scriptData: newData });
+            } catch (uploadError: any) {
+              console.error('[StageAssets] ❌ 上传到云端失败，仅保存到本地:', uploadError);
+              showAlert('云端上传失败，将仅保存到本地', { type: 'warning' });
+            }
+          }
+        }
+        
+        const item = createLibraryItemFromCharacter(charToSave, project);
+        await hybridStorage.saveAssetToLibrary(item);
+        showAlert(`已加入资产库：${char.name}`, { type: 'success' });
+      } catch (e: any) {
+        console.error('[StageAssets] 加入资产库失败:', e);
+        showAlert(e?.message || '加入资产库失败', { type: 'error' });
+      }
+    };
+
+    if (!char.imageUrl) {
+      showAlert('该角色暂无参考图，仍要加入资产库吗？', {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: saveItem
+      });
+      return;
+    }
+
+    void saveItem();
+  };
+
+  const handleAddSceneToLibrary = async (scene: Scene) => {
+    const saveItem = async () => {
+      try {
+        let sceneToSave = { ...scene };
+        
+        if (scene.imageUrl?.startsWith('local:')) {
+          console.log('[StageAssets] ☁️ 上传本地场景图片到云端:', scene.imageUrl);
+          const blob = await imageStorageService.getImage(scene.imageUrl.substring(6));
+          if (!blob) {
+            console.warn('[StageAssets] ⚠️ 本地场景图片读取失败，将仅保存到本地');
+          } else {
+            try {
+              const cloudUrl = await imageStorageService.uploadToCloud(
+                scene.imageUrl.substring(6),
+                blob,
+                `${user?.id || 'anonymous'}/asset_library/scene/${scene.id}`
+              );
+              sceneToSave.imageUrl = cloudUrl;
+              
+              const newData = { ...project.scriptData! };
+              const s = newData.scenes.find(s => s.id === scene.id);
+              if (s) {
+                s.imageUrl = cloudUrl;
+              }
+              updateProject({ scriptData: newData });
+            } catch (uploadError: any) {
+              console.error('[StageAssets] ❌ 场景图片上传到云端失败，仅保存到本地:', uploadError);
+              showAlert('云端上传失败，将仅保存到本地', { type: 'warning' });
+            }
+          }
+        }
+        
+        const item = createLibraryItemFromScene(sceneToSave, project);
+        await hybridStorage.saveAssetToLibrary(item);
+        showAlert(`已加入资产库：${scene.location}`, { type: 'success' });
+      } catch (e: any) {
+        console.error('[StageAssets] 加入资产库失败:', e);
+        showAlert(e?.message || '加入资产库失败', { type: 'error' });
+      }
+    };
+
+    if (!scene.imageUrl) {
+      showAlert('该场景暂无参考图，仍要加入资产库吗？', {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: saveItem
+      });
+      return;
+    }
+
+    void saveItem();
+  };
+
+  const handleImportFromLibrary = (item: AssetLibraryItem) => {
+    try {
+      const updated = applyLibraryItemToProject(project, item);
+      updateProject(() => updated);
+      showAlert(`已导入：${item.name}`, { type: 'success' });
+    } catch (e: any) {
+      showAlert(e?.message || '导入失败', { type: 'error' });
+    }
+  };
+
+  const handleReplaceCharacterFromLibrary = (item: AssetLibraryItem, targetId: string) => {
+    if (item.type !== 'character' && item.type !== 'turnaround') {
+      showAlert('请选择角色资产进行替换', { type: 'warning' });
+      return;
+    }
+    if (!project.scriptData) return;
+
+    const newData = { ...project.scriptData };
+    const index = newData.characters.findIndex((c) => compareIds(c.id, targetId));
+    if (index === -1) return;
+
+    const cloned = cloneCharacterForProject(item.data as Character);
+    const previous = newData.characters[index];
+
+    newData.characters[index] = {
+      ...cloned,
+      id: previous.id
+    };
+
+    const nextShots = project.shots.map((shot) => {
+      if (!shot.characterVariations || !shot.characterVariations[targetId]) return shot;
+      const { [targetId]: _removed, ...rest } = shot.characterVariations;
+      return {
+        ...shot,
+        characterVariations: Object.keys(rest).length > 0 ? rest : undefined
+      };
+    });
+
+    updateProject({ scriptData: newData, shots: nextShots });
+    showAlert(`已替换角色：${previous.name} → ${cloned.name}`, { type: 'success' });
+    setShowLibraryModal(false);
+    setReplaceTargetCharId(null);
+  };
+
+  const handleReplaceSceneFromLibrary = (item: AssetLibraryItem, targetId: string) => {
+    if (item.type !== 'scene') {
+      showAlert('请选择场景资产进行替换', { type: 'warning' });
+      return;
+    }
+    if (!project.scriptData) return;
+
+    const newData = { ...project.scriptData };
+    const index = newData.scenes.findIndex((s) => compareIds(s.id, targetId));
+    if (index === -1) return;
+
+    const cloned = { ...(item.data as Scene) };
+    const previous = newData.scenes[index];
+
+    newData.scenes[index] = {
+      ...cloned,
+      id: previous.id
+    };
+
+    updateProject({ scriptData: newData });
+    showAlert(`已替换场景：${previous.location} → ${cloned.location}`, { type: 'success' });
+    setShowLibraryModal(false);
+    setReplaceTargetSceneId(null);
+  };
+
+  const handleReplacePropFromLibrary = (item: AssetLibraryItem, targetId: string) => {
+    if (item.type !== 'prop') {
+      showAlert('请选择道具资产进行替换', { type: 'warning' });
+      return;
+    }
+    if (!project.scriptData) return;
+
+    const newData = { ...project.scriptData };
+    const index = (newData.props || []).findIndex((p) => compareIds(p.id, targetId));
+    if (index === -1) return;
+
+    const cloned = { ...(item.data as Prop) };
+    const previous = (newData.props || [])[index];
+
+    if (!newData.props) newData.props = [];
+    newData.props[index] = {
+      ...cloned,
+      id: previous.id
+    };
+
+    updateProject({ scriptData: newData });
+    showAlert(`已替换道具：${previous.name} → ${cloned.name}`, { type: 'success' });
+    setShowLibraryModal(false);
+    setReplaceTargetPropId(null);
+  };
+
+  /**
+   * 保存角色提示词
+   */
+  const handleSaveCharacterPrompt = (charId: string, newPrompt: string) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const char = newData.characters.find(c => compareIds(c.id, charId));
+    if (char) {
+      char.visualPrompt = newPrompt;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * 更新角色基本信息
+   */
+  const handleUpdateCharacterInfo = (charId: string, updates: {
+    name?: string;
+    gender?: string;
+    age?: string;
+    personality?: string;
+    signaturePose?: import('../../types').VisualDescriptionField;
+    microAction?: import('../../types').VisualDescriptionField;
+  }) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const char = newData.characters.find(c => compareIds(c.id, charId));
+    if (char) {
+      if (updates.name !== undefined) char.name = updates.name;
+      if (updates.gender !== undefined) char.gender = updates.gender;
+      if (updates.age !== undefined) char.age = updates.age;
+      if (updates.personality !== undefined) char.personality = updates.personality;
+      if (updates.signaturePose !== undefined) char.signaturePose = updates.signaturePose;
+      if (updates.microAction !== undefined) char.microAction = updates.microAction;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * AI 润色视觉描述文本
+   * 用于标志性姿态和病态微动作的润色
+   */
+  const handlePolishVisualDescription = async (
+    text: string,
+    fieldType: 'signaturePose' | 'microAction',
+    character: Character  // 直接传入 character 对象，而不是通过 text 查找
+  ): Promise<string> => {
+    if (!text.trim()) return text;
+
+    const char = character;
+
+    const instruction = fieldType === 'signaturePose'
+      ? `你是一个专业的漫画分镜视觉描述专家。请将用户输入的角色标志性姿态描述润色成专业的视觉指令。
+要求：
+1. 使用专业的视觉描述语言
+2. 包含镜头角度、光影、构图等电影感描述
+3. 保持角色特征一致性
+4. 控制在100字以内
+5. 只输出润色后的文本，不要其他解释`
+      : `你是一个专业的漫画分镜视觉描述专家。请将用户输入的角色病态微动作描述润色成专业的视觉指令。
+要求：
+1. 重点描述微动作的细节和表情变化
+2. 使用特写或近景镜头语言
+3. 强调情绪和心理状态
+4. 控制在80字以内
+5. 只输出润色后的文本，不要其他解释`;
+
+    const userPrompt = `${instruction}
+
+角色「${char.name}」的${fieldType === 'signaturePose' ? '标志性姿态' : '病态微动作'}：${text}`;
+
+    console.log('[AI润色] 开始润色:', { text, fieldType, charName: char.name });
+    console.log('[AI润色] 发送给模型的 prompt:', userPrompt);
+
+    try {
+      const { chatCompletion, getActiveChatModelName } = await import('../../services/ai/apiCore');
+      const modelName = getActiveChatModelName();
+      console.log('[AI润色] 使用模型:', modelName);
+
+      const result = await chatCompletion(userPrompt, modelName, 0.7, 500);
+      console.log('[AI润色] 模型返回结果:', result);
+
+      return result.trim();
+    } catch (error) {
+      console.error('[AI润色] 调用失败:', error);
+      return text;
+    }
+  };
+
+  /**
+   * 生成视觉描述预览图
+   * 使用 polished 文本生成预览图
+   */
+  const handleGenerateVisualPreview = async (
+    text: string,
+    fieldType: 'signaturePose' | 'microAction',
+    character: Character
+  ): Promise<string> => {
+    if (!text.trim()) return '';
+
+    const regionalPrefix = getRegionalPrefix(language, 'character');
+    const fieldTypeInstruction = fieldType === 'signaturePose'
+      ? ', cinematic portrait, dramatic lighting, character consistent with description'
+      : ', extreme close-up detail, subtle movement capture, psychological tension';
+
+    const enhancedPrompt = `${regionalPrefix}${text}${fieldTypeInstruction}`;
+
+    // 处理参考图：如果角色有原图，转为 base64 格式
+    const referenceImages: string[] = [];
+    if (character.imageUrl) {
+      if (character.imageUrl.startsWith('local:')) {
+        // 从本地存储获取图片并转为 base64
+        const localImageId = character.imageUrl.substring(6);
+        try {
+          const imageBlob = await imageStorageService.getImage(localImageId);
+          if (imageBlob) {
+            const reader = new FileReader();
+            const base64Promise = new Promise<string>((resolve) => {
+              reader.onloadend = () => resolve(reader.result as string);
+            });
+            reader.readAsDataURL(imageBlob);
+            const base64Url = await base64Promise;
+            referenceImages.push(base64Url);
+            console.log('[预览图生成] 已将本地图片转为 base64:', localImageId);
+          }
+        } catch (err) {
+          console.warn('[预览图生成] 获取本地图片失败:', err);
+        }
+      } else if (character.imageUrl.startsWith('data:')) {
+        referenceImages.push(character.imageUrl);
+      }
+    }
+
+    console.log('[预览图生成] 开始生成:', {
+      text,
+      fieldType,
+      charName: character.name,
+      charImageUrl: character.imageUrl,
+      enhancedPrompt,
+      referenceImages,
+      aspectRatio,
+    });
+
+    try {
+      const imageUrl = await generateImage(
+        enhancedPrompt,
+        referenceImages,
+        aspectRatio,
+        false,
+        false,
+        'character',
+        character.id
+      );
+      console.log('[预览图生成] 生成成功:', imageUrl);
+      return imageUrl;
+    } catch (error) {
+      console.error('[预览图生成] 生成失败:', error);
+      return '';
+    }
+  };
+
+  /**
+   * 保存场景提示词
+   */
+  const handleSaveScenePrompt = (sceneId: string, newPrompt: string) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const scene = newData.scenes.find(s => compareIds(s.id, sceneId));
+    if (scene) {
+      scene.visualPrompt = newPrompt;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * 更新场景基本信息
+   */
+  const handleUpdateSceneInfo = (sceneId: string, updates: { location?: string; time?: string; atmosphere?: string }) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const scene = newData.scenes.find(s => compareIds(s.id, sceneId));
+    if (scene) {
+      if (updates.location !== undefined) scene.location = updates.location;
+      if (updates.time !== undefined) scene.time = updates.time;
+      if (updates.atmosphere !== undefined) scene.atmosphere = updates.atmosphere;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * 新建角色
+   */
+  const handleAddCharacter = () => {
+    if (!project.scriptData) return;
+    
+    const newChar: Character = {
+      id: generateId('char'),
+      name: '新角色',
+      gender: '未设定',
+      age: '未设定',
+      personality: '待补充',
+      visualPrompt: '',
+      variations: [],
+      status: 'pending'
+    };
+
+    const newData = { ...project.scriptData };
+    newData.characters.push(newChar);
+    updateProject({ scriptData: newData });
+    showAlert('新角色已创建，请编辑提示词并生成图片', { type: 'success' });
+  };
+
+  /**
+   * 删除角色
+   */
+  const handleDeleteCharacter = (charId: string) => {
+    if (!project.scriptData) return;
+    const char = project.scriptData.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+
+    showAlert(
+      `确定要删除角色 "${char.name}" 吗？\n\n注意：这将会影响所有使用该角色的分镜，可能导致分镜关联错误。`,
+      {
+        type: 'warning',
+        title: '删除角色',
+        showCancel: true,
+        confirmText: '删除',
+        cancelText: '取消',
+        onConfirm: () => {
+          const newData = { ...project.scriptData! };
+          newData.characters = newData.characters.filter(c => !compareIds(c.id, charId));
+          updateProject({ scriptData: newData });
+          showAlert(`角色 "${char.name}" 已删除`, { type: 'success' });
+        }
+      }
+    );
+  };
+
+  /**
+   * 新建场景
+   */
+  const handleAddScene = () => {
+    if (!project.scriptData) return;
+    
+    const newScene: Scene = {
+      id: generateId('scene'),
+      location: '新场景',
+      time: '未设定',
+      atmosphere: '待补充',
+      visualPrompt: '',
+      status: 'pending'
+    };
+
+    const newData = { ...project.scriptData };
+    newData.scenes.push(newScene);
+    updateProject({ scriptData: newData });
+    showAlert('新场景已创建，请编辑提示词并生成图片', { type: 'success' });
+  };
+
+  /**
+   * 删除场景
+   */
+  const handleDeleteScene = (sceneId: string) => {
+    if (!project.scriptData) return;
+    const scene = project.scriptData.scenes.find(s => compareIds(s.id, sceneId));
+    if (!scene) return;
+
+    showAlert(
+      `确定要删除场景 "${scene.location}" 吗？\n\n注意：这将会影响所有使用该场景的分镜，可能导致分镜关联错误。`,
+      {
+        type: 'warning',
+        title: '删除场景',
+        showCancel: true,
+        confirmText: '删除',
+        cancelText: '取消',
+        onConfirm: () => {
+          const newData = { ...project.scriptData! };
+          newData.scenes = newData.scenes.filter(s => !compareIds(s.id, sceneId));
+          updateProject({ scriptData: newData });
+          showAlert(`场景 "${scene.location}" 已删除`, { type: 'success' });
+        }
+      }
+    );
+  };
+
+  // ============================
+  // 道具相关处理函数
+  // ============================
+
+  /**
+   * 新建道具
+   */
+  const handleAddProp = () => {
+    if (!project.scriptData) return;
+    
+    const newProp: Prop = {
+      id: generateId('prop'),
+      name: '新道具',
+      category: '其他',
+      description: '',
+      visualPrompt: '',
+      status: 'pending'
+    };
+
+    const newData = { ...project.scriptData };
+    if (!newData.props) newData.props = [];
+    newData.props.push(newProp);
+    updateProject({ scriptData: newData });
+    showAlert('新道具已创建，请编辑描述和提示词并生成图片', { type: 'success' });
+  };
+
+  /**
+   * 删除道具
+   */
+  const handleDeleteProp = (propId: string) => {
+    if (!project.scriptData) return;
+    const prop = (project.scriptData.props || []).find(p => compareIds(p.id, propId));
+    if (!prop) return;
+
+    showAlert(
+      `确定要删除道具 "${prop.name}" 吗？\n\n注意：这将会影响所有使用该道具的分镜。`,
+      {
+        type: 'warning',
+        title: '删除道具',
+        showCancel: true,
+        confirmText: '删除',
+        cancelText: '取消',
+        onConfirm: () => {
+          const newData = { ...project.scriptData! };
+          newData.props = (newData.props || []).filter(p => !compareIds(p.id, propId));
+          // 清除所有镜头中对该道具的引用
+          const nextShots = project.shots.map(shot => {
+            if (!shot.props || !shot.props.includes(propId)) return shot;
+            return { ...shot, props: shot.props.filter(id => id !== propId) };
+          });
+          updateProject({ scriptData: newData, shots: nextShots });
+          showAlert(`道具 "${prop.name}" 已删除`, { type: 'success' });
+        }
+      }
+    );
+  };
+
+  /**
+   * 生成道具图片
+   */
+  const handleGeneratePropAsset = async (propId: string) => {
+    if (!project.scriptData) return;
+    
+    // 设置生成状态
+    const newData = { ...project.scriptData };
+    const p = (newData.props || []).find(p => compareIds(p.id, propId));
+    if (p) p.status = 'generating';
+    updateProject({ scriptData: newData });
+
+    try {
+      const prop = project.scriptData.props?.find(p => compareIds(p.id, propId));
+      if (!prop) return;
+
+      let prompt = '';
+      if (prop.visualPrompt) {
+        prompt = prop.visualPrompt;
+      } else {
+        // 自动生成提示词
+        prompt = `A detailed product shot of "${prop.name}". ${prop.description || ''}. Category: ${prop.category}. High quality, studio lighting, clean background, detailed texture and material rendering.`;
+      }
+
+      const imageUrl = await generateImage(prompt, [], aspectRatio, false, false, 'prop', propId);
+
+      // 更新状态
+      const updatedData = { ...project.scriptData };
+      const updated = (updatedData.props || []).find(p => compareIds(p.id, propId));
+      if (updated) {
+        updated.imageUrl = imageUrl;
+        updated.status = 'completed';
+        if (!updated.visualPrompt) {
+          updated.visualPrompt = prompt;
+        }
+      }
+      updateProject({ scriptData: updatedData });
+    } catch (e: any) {
+      console.error(e);
+      const errData = { ...project.scriptData };
+      const errP = (errData.props || []).find(p => compareIds(p.id, propId));
+      if (errP) errP.status = 'failed';
+      updateProject({ scriptData: errData });
+      if (onApiKeyError && onApiKeyError(e)) return;
+    }
+  };
+
+  /**
+   * 上传道具图片
+   */
+  const handleUploadPropImage = async (propId: string, file: File) => {
+    try {
+      const localImageId = await handleImageUpload(file);
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const prop = (newData.props || []).find(p => compareIds(p.id, propId));
+        if (prop) {
+          prop.imageUrl = localImageId;
+          prop.status = 'completed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      showAlert(e.message, { type: 'error' });
+    }
+  };
+
+  /**
+   * 保存道具提示词
+   */
+  const handleSavePropPrompt = (propId: string, newPrompt: string) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const prop = (newData.props || []).find(p => compareIds(p.id, propId));
+    if (prop) {
+      prop.visualPrompt = newPrompt;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * 更新道具基本信息
+   */
+  const handleUpdatePropInfo = (propId: string, updates: { name?: string; category?: string; description?: string }) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const prop = (newData.props || []).find(p => compareIds(p.id, propId));
+    if (prop) {
+      if (updates.name !== undefined) prop.name = updates.name;
+      if (updates.category !== undefined) prop.category = updates.category;
+      if (updates.description !== undefined) prop.description = updates.description;
+      updateProject({ scriptData: newData });
+    }
+  };
+
+  /**
+   * 加入资产库（道具）
+   */
+  const handleAddPropToLibrary = async (prop: Prop) => {
+    const saveItem = async () => {
+      try {
+        let propToSave = { ...prop };
+        
+        if (prop.imageUrl?.startsWith('local:')) {
+          console.log('[StageAssets] ☁️ 上传本地道具图片到云端:', prop.imageUrl);
+          const blob = await imageStorageService.getImage(prop.imageUrl.substring(6));
+          if (!blob) {
+            console.warn('[StageAssets] ⚠️ 本地道具图片读取失败，将仅保存到本地');
+          } else {
+            try {
+              const cloudUrl = await imageStorageService.uploadToCloud(
+                prop.imageUrl.substring(6),
+                blob,
+                `${user?.id || 'anonymous'}/asset_library/prop/${prop.id}`
+              );
+              propToSave.imageUrl = cloudUrl;
+              
+              const newData = { ...project.scriptData! };
+              const p = (newData.props || []).find(p => p.id === prop.id);
+              if (p) {
+                p.imageUrl = cloudUrl;
+              }
+              updateProject({ scriptData: newData });
+            } catch (uploadError: any) {
+              console.error('[StageAssets] ❌ 道具图片上传到云端失败，仅保存到本地:', uploadError);
+              showAlert('云端上传失败，将仅保存到本地', { type: 'warning' });
+            }
+          }
+        }
+        
+        const item = createLibraryItemFromProp(propToSave, project);
+        await hybridStorage.saveAssetToLibrary(item);
+        showAlert(`已加入资产库：${prop.name}`, { type: 'success' });
+      } catch (e: any) {
+        console.error('[StageAssets] 加入资产库失败:', e);
+        showAlert(e?.message || '加入资产库失败', { type: 'error' });
+      }
+    };
+
+    if (!prop.imageUrl) {
+      showAlert('该道具暂无参考图，仍要加入资产库吗？', {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: saveItem
+      });
+      return;
+    }
+
+    void saveItem();
+  };
+
+  /**
+   * 批量生成道具
+   */
+  const handleBatchGenerateProps = async () => {
+    const items = project.scriptData?.props || [];
+    if (!items.length) return;
+
+    const itemsToGen = items.filter(p => !p.imageUrl);
+    const isRegenerate = itemsToGen.length === 0;
+
+    if (isRegenerate) {
+      showAlert('确定要重新生成所有道具图吗？', {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: async () => {
+          await executeBatchGenerateProps(items);
+        }
+      });
+      return;
+    }
+
+    await executeBatchGenerateProps(itemsToGen);
+  };
+
+  const executeBatchGenerateProps = async (targetItems: Prop[]) => {
+    setBatchProgress({ current: 0, total: targetItems.length });
+
+    for (let i = 0; i < targetItems.length; i++) {
+      if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
+      await handleGeneratePropAsset(targetItems[i].id);
+      setBatchProgress({ current: i + 1, total: targetItems.length });
+    }
+
+    setBatchProgress(null);
+  };
+
+  /**
+   * 添加角色变体
+   */
+  const handleAddVariation = (charId: string, name: string, prompt: string) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const char = newData.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+
+    const newVar: CharacterVariation = {
+      id: generateId('var'),
+      name: name || "New Outfit",
+      visualPrompt: prompt || char.visualPrompt || "",
+      imageUrl: undefined
+    };
+
+    if (!char.variations) char.variations = [];
+    char.variations.push(newVar);
+    
+    updateProject({ scriptData: newData });
+  };
+
+  /**
+   * 删除角色变体
+   */
+  const handleDeleteVariation = (charId: string, varId: string) => {
+    if (!project.scriptData) return;
+    const newData = { ...project.scriptData };
+    const char = newData.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+    
+    char.variations = char.variations?.filter(v => !compareIds(v.id, varId));
+    updateProject({ scriptData: newData });
+  };
+
+  /**
+   * 生成角色变体
+   */
+  const handleGenerateVariation = async (charId: string, varId: string) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    const variation = char?.variations?.find(v => compareIds(v.id, varId));
+    if (!char || !variation) return;
+
+    // 设置生成状态
+    if (project.scriptData) {
+      const newData = { ...project.scriptData };
+      const c = newData.characters.find(c => compareIds(c.id, charId));
+      const v = c?.variations?.find(v => compareIds(v.id, varId));
+      if (v) v.status = 'generating';
+      updateProject({ scriptData: newData });
+    }
+    try {
+      const refImages = char.imageUrl ? [char.imageUrl] : [];
+      const regionalPrefix = getRegionalPrefix(language, 'character');
+      // 构建变体专用提示词：强调服装变化
+      const enhancedPrompt = `${regionalPrefix}Character "${char.name}" wearing NEW OUTFIT: ${variation.visualPrompt}. This is a costume/outfit change - the character's face and identity must remain identical to the reference, but they should be wearing the described new outfit.`;
+      
+      // 使用选择的横竖屏比例，启用变体模式
+      const imageUrl = await generateImage(enhancedPrompt, refImages, aspectRatio, true, false, 'character-variation', varId);
+
+      const newData = { ...project.scriptData! };
+      const c = newData.characters.find(c => compareIds(c.id, charId));
+      const v = c?.variations?.find(v => compareIds(v.id, varId));
+      if (v) {
+        v.imageUrl = imageUrl;
+        v.status = 'completed';
+      }
+
+      updateProject({ scriptData: newData });
+    } catch (e: any) {
+      console.error(e);
+      // 设置失败状态
+      if (project.scriptData) {
+        const newData = { ...project.scriptData };
+        const c = newData.characters.find(c => compareIds(c.id, charId));
+        const v = c?.variations?.find(v => compareIds(v.id, varId));
+        if (v) v.status = 'failed';
+        updateProject({ scriptData: newData });
+      }
+      if (onApiKeyError && onApiKeyError(e)) {
+        return;
+      }
+      showAlert("Variation generation failed", { type: 'error' });
+    }
+  };
+
+  /**
+   * 上传角色变体图片
+   */
+  const handleUploadVariationImage = async (charId: string, varId: string, file: File) => {
+    try {
+      const base64 = await handleImageUpload(file);
+
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const char = newData.characters.find(c => compareIds(c.id, charId));
+        const variation = char?.variations?.find(v => compareIds(v.id, varId));
+        if (variation) {
+          variation.imageUrl = base64;
+          variation.status = 'completed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      showAlert(e.message, { type: 'error' });
+    }
+  };
+
+  // ============================
+  // 角色九宫格造型相关处理函数
+  // ============================
+
+  /**
+   * 生成角色九宫格造型的视角描述（Step 1）
+   */
+  const handleGenerateTurnaroundPanels = async (charId: string) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+
+    const activeModel = getActiveChatModel();
+
+    // 设置状态为 generating_panels
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = { ...prev.scriptData };
+      const c = newData.characters.find(c => compareIds(c.id, charId));
+      if (c) {
+        c.turnaround = {
+          panels: [],
+          status: 'generating_panels',
+        };
+      }
+      return { ...prev, scriptData: newData };
+    });
+
+    try {
+      const panels = await generateCharacterTurnaroundPanels(
+        char,
+        project.scriptData?.artDirection,
+        visualStyle,
+        language,
+        activeModel?.id || getDefaultChatModelId()
+      );
+
+      // 更新状态为 panels_ready
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const c = newData.characters.find(c => compareIds(c.id, charId));
+        if (c) {
+          c.turnaround = {
+            panels,
+            status: 'panels_ready',
+          };
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      console.error('九宫格视角描述生成失败:', e);
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const c = newData.characters.find(c => compareIds(c.id, charId));
+        if (c && c.turnaround) {
+          c.turnaround.status = 'failed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+      if (onApiKeyError && onApiKeyError(e)) return;
+      showAlert('九宫格视角描述生成失败', { type: 'error' });
+    }
+  };
+
+  /**
+   * 确认视角描述并生成九宫格图片（Step 2）
+   */
+  const handleConfirmTurnaroundPanels = async (charId: string, panels: CharacterTurnaroundPanel[]) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+
+    const activeModel = getActiveChatModel();
+
+    // 设置状态为 generating_image
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = { ...prev.scriptData };
+      const c = newData.characters.find(c => compareIds(c.id, charId));
+      if (c && c.turnaround) {
+        c.turnaround.status = 'generating_image';
+        c.turnaround.panels = panels;
+      }
+      return { ...prev, scriptData: newData };
+    });
+
+    try {
+      const imageUrl = await generateCharacterTurnaroundImage(
+        panels,
+        char,
+        project.scriptData?.artDirection,
+        visualStyle,
+        '1:1',
+        language,
+        activeModel?.id || getDefaultChatModelId()
+      );
+
+      // 更新状态为 completed
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const c = newData.characters.find(c => compareIds(c.id, charId));
+        if (c && c.turnaround) {
+          c.turnaround.imageUrl = imageUrl;
+          c.turnaround.status = 'completed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      console.error('九宫格造型图片生成失败:', e);
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = { ...prev.scriptData };
+        const c = newData.characters.find(c => compareIds(c.id, charId));
+        if (c && c.turnaround) {
+          c.turnaround.status = 'failed';
+        }
+        return { ...prev, scriptData: newData };
+      });
+      if (onApiKeyError && onApiKeyError(e)) return;
+      showAlert('九宫格造型图片生成失败', { type: 'error' });
+    }
+  };
+
+  /**
+   * 更新九宫格造型的单个面板
+   */
+  const handleUpdateTurnaroundPanel = (charId: string, index: number, updates: Partial<CharacterTurnaroundPanel>) => {
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = { ...prev.scriptData };
+      const c = newData.characters.find(c => compareIds(c.id, charId));
+      if (c && c.turnaround && c.turnaround.panels[index]) {
+        c.turnaround.panels[index] = { ...c.turnaround.panels[index], ...updates };
+      }
+      return { ...prev, scriptData: newData };
+    });
+  };
+
+  /**
+   * 重新生成九宫格造型（文案+图片全部重来）
+   */
+  const handleRegenerateTurnaround = (charId: string) => {
+    handleGenerateTurnaroundPanels(charId);
+  };
+
+  /**
+   * 仅重新生成九宫格造型图片（保留已有的视角描述文案）
+   * 当用户对文案满意但图片效果不好时使用
+   */
+  const handleRegenerateTurnaroundImage = (charId: string) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    if (!char || !char.turnaround?.panels || char.turnaround.panels.length !== 9) return;
+    
+    // 直接使用已有的面板描述重新生成图片
+    handleConfirmTurnaroundPanels(charId, char.turnaround.panels);
+  };
+
+  /**
+   * 将九宫格造型存入素材库
+   */
+  const handleAddTurnaroundToLibrary = async (charId: string) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    if (!char || !char.turnaround?.imageUrl) {
+      showAlert('该角色暂无九宫格造型图', { type: 'warning' });
+      return;
+    }
+
+    const saveItem = async () => {
+      try {
+        const charToSave = { ...char };
+        
+        if (char.turnaround.imageUrl?.startsWith('local:')) {
+          console.log('[StageAssets] ☁️ 上传本地九宫格图片到云端:', char.turnaround.imageUrl);
+          const localBlob = await imageStorageService.getImage(char.turnaround.imageUrl.substring(6));
+          if (!localBlob) {
+            console.warn('[StageAssets] ⚠️ 本地九宫格图片读取失败，将仅保存到本地');
+          } else {
+            try {
+              const cloudUrl = await imageStorageService.uploadToCloud(
+                char.turnaround.imageUrl.substring(6),
+                localBlob,
+                `${user?.id || 'anonymous'}/asset_library/turnaround/${char.id}`
+              );
+              if (cloudUrl) {
+                charToSave.turnaround = {
+                  ...charToSave.turnaround,
+                  imageUrl: cloudUrl
+                };
+                
+                updateProject((prev) => {
+                  if (!prev.scriptData) return prev;
+                  const newData = { ...prev.scriptData };
+                  const c = newData.characters.find(c => compareIds(c.id, charId));
+                  if (c && c.turnaround) {
+                    c.turnaround.imageUrl = cloudUrl;
+                  }
+                  return { ...prev, scriptData: newData };
+                });
+              }
+            } catch (uploadError: any) {
+              console.error('[StageAssets] ❌ 九宫格图片上传到云端失败，仅保存到本地:', uploadError);
+              showAlert('云端上传失败，将仅保存到本地', { type: 'warning' });
+            }
+          }
+        }
+        
+        const item = createLibraryItemFromTurnaround(charToSave, project);
+        await hybridStorage.saveAssetToLibrary(item);
+        showAlert(`已加入资产库：${char.name} - 九宫格造型`, { type: 'success' });
+      } catch (e: any) {
+        console.error('[StageAssets] 加入资产库失败:', e);
+        showAlert(e?.message || '加入资产库失败', { type: 'error' });
+      }
+    };
+
+    void saveItem();
+  };
+
+  // 空状态
+  if (!project.scriptData) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center bg-[var(--bg-secondary)] text-[var(--text-tertiary)]">
+        <p>请先完成 Phase 01 剧本分析</p>
+      </div>
+    );
+  }
+  
+  const allCharactersReady = project.scriptData.characters.every(c => c.imageUrl);
+  const allScenesReady = project.scriptData.scenes.every(s => s.imageUrl);
+  const allPropsReady = (project.scriptData.props || []).length > 0 && (project.scriptData.props || []).every(p => p.imageUrl);
+  const selectedChar = project.scriptData.characters.find(c => compareIds(c.id, selectedCharId));
+
+  return (
+    <div className={STYLES.mainContainer}>
+      
+      {/* Image Preview Modal */}
+      <ImagePreviewModal 
+        imageUrl={previewImage} 
+        onClose={() => setPreviewImage(null)} 
+      />
+
+      {/* Global Progress Overlay */}
+      {batchProgress && (
+        <div className="absolute inset-0 z-50 bg-[var(--bg-base)]/80 flex flex-col items-center justify-center backdrop-blur-md animate-in fade-in">
+          <Loader2 className="w-12 h-12 text-[var(--accent)] animate-spin mb-6" />
+          <h3 className="text-xl font-bold text-[var(--text-primary)] mb-2">正在批量生成资源...</h3>
+          <div className="w-64 h-1.5 bg-[var(--bg-hover)] rounded-full overflow-hidden mb-2">
+            <div 
+              className="h-full bg-[var(--accent)] transition-all duration-300" 
+              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+            />
+          </div>
+          <p className="text-[var(--text-tertiary)] font-mono text-xs">
+            进度: {batchProgress.current} / {batchProgress.total}
+          </p>
+        </div>
+      )}
+
+      {/* Wardrobe Modal */}
+      {selectedChar && (
+        <WardrobeModal
+          character={selectedChar}
+          onClose={() => setSelectedCharId(null)}
+          onAddVariation={handleAddVariation}
+          onDeleteVariation={handleDeleteVariation}
+          onGenerateVariation={handleGenerateVariation}
+          onUploadVariation={handleUploadVariationImage}
+          onImageClick={setPreviewImage}
+        />
+      )}
+
+      {/* Turnaround Modal */}
+      {turnaroundCharId && (() => {
+        const turnaroundChar = project.scriptData?.characters.find(c => compareIds(c.id, turnaroundCharId));
+        return turnaroundChar ? (
+          <TurnaroundModal
+            character={turnaroundChar}
+            onClose={() => setTurnaroundCharId(null)}
+            onGeneratePanels={handleGenerateTurnaroundPanels}
+            onConfirmPanels={handleConfirmTurnaroundPanels}
+            onUpdatePanel={handleUpdateTurnaroundPanel}
+            onRegenerate={handleRegenerateTurnaround}
+            onRegenerateImage={handleRegenerateTurnaroundImage}
+            onImageClick={setPreviewImage}
+            onAddToLibrary={handleAddTurnaroundToLibrary}
+          />
+        ) : null;
+      })()}
+
+      {/* Asset Library Modal */}
+      <AssetLibraryModal
+        isOpen={showLibraryModal}
+        onClose={() => {
+          setShowLibraryModal(false);
+          setReplaceTargetCharId(null);
+          setReplaceTargetSceneId(null);
+          setReplaceTargetPropId(null);
+        }}
+        onImport={handleImportFromLibrary}
+        onReplace={(item, targetId) => {
+          if (replaceTargetCharId) {
+            handleReplaceCharacterFromLibrary(item, targetId);
+          } else if (replaceTargetSceneId) {
+            handleReplaceSceneFromLibrary(item, targetId);
+          } else if (replaceTargetPropId) {
+            handleReplacePropFromLibrary(item, targetId);
+          }
+        }}
+        replaceTargetCharId={replaceTargetCharId || replaceTargetSceneId || replaceTargetPropId || null}
+      />
+
+      {/* Header */}
+      <div className={STYLES.header}>
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
+            <Users className="w-5 h-5 text-[var(--accent)]" />
+            角色与场景
+            <span className="text-xs text-[var(--text-muted)] font-mono font-normal uppercase tracking-wider bg-[var(--bg-base)]/30 px-2 py-1 rounded">
+              Assets & Casting
+            </span>
+          </h2>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => openLibrary('all')}
+            disabled={!!batchProgress}
+            className={STYLES.secondaryButton}
+          >
+            <Archive className="w-4 h-4" />
+            资产库
+          </button>
+          {/* 横竖屏选择 */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">比例</span>
+            <AspectRatioSelector
+              value={aspectRatio}
+              onChange={setAspectRatio}
+              allowSquare={(() => {
+                // 根据当前激活的图片模型判断是否支持方形
+                const activeModel = getActiveImageModel();
+                return activeModel?.params?.supportedAspectRatios?.includes('1:1') ?? false;
+              })()}
+              disabled={!!batchProgress}
+            />
+          </div>
+          <div className="w-px h-6 bg-[var(--bg-hover)]" />
+          <div className="flex gap-2">
+            <span className={STYLES.badge}>
+              {project.scriptData.characters.length} CHARS
+            </span>
+            <span className={STYLES.badge}>
+              {project.scriptData.scenes.length} SCENES
+            </span>
+            <span className={STYLES.badge}>
+              {(project.scriptData.props || []).length} PROPS
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className={STYLES.content}>
+        {/* Characters Section */}
+        <section>
+          <div className="flex items-end justify-between mb-6 border-b border-[var(--border-primary)] pb-4">
+            <div>
+              <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full" />
+                角色定妆 (Casting)
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">为剧本中的角色生成一致的参考形象</p>
+            </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleAddCharacter}
+                disabled={!!batchProgress}
+                className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Users className="w-3 h-3" />
+                新建角色
+              </button>
+              <button 
+                onClick={() => openLibrary('character')}
+                disabled={!!batchProgress}
+                className={STYLES.secondaryButton}
+              >
+                <Archive className="w-3 h-3" />
+                从资产库选择
+              </button>
+              <button 
+                onClick={() => handleBatchGenerate('character')}
+                disabled={!!batchProgress}
+                className={allCharactersReady ? STYLES.secondaryButton : STYLES.primaryButton}
+              >
+                {allCharactersReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+                {allCharactersReady ? '重新生成所有角色' : '一键生成所有角色'}
+              </button>
+            </div>
+          </div>
+
+          <div className={GRID_LAYOUTS.cards}>
+            {project.scriptData.characters.map((char) => (
+              <CharacterCard
+                key={char.id}
+                character={char}
+                isGenerating={char.status === 'generating'}
+                onGenerate={() => handleGenerateAsset('character', char.id)}
+                onUpload={(file) => handleUploadCharacterImage(char.id, file)}
+                onPromptSave={(newPrompt) => handleSaveCharacterPrompt(char.id, newPrompt)}
+                onOpenWardrobe={() => setSelectedCharId(char.id)}
+                onOpenTurnaround={() => setTurnaroundCharId(char.id)}
+                onImageClick={setPreviewImage}
+                onDelete={() => handleDeleteCharacter(char.id)}
+                onUpdateInfo={(updates) => handleUpdateCharacterInfo(char.id, updates)}
+                onAddToLibrary={() => handleAddCharacterToLibrary(char)}
+                onReplaceFromLibrary={() => openLibrary('character','character', char.id)}
+                onPolishText={handlePolishVisualDescription}
+                onGeneratePreview={handleGenerateVisualPreview}
+              />
+            ))}
+          </div>
+        </section>
+
+        {/* Scenes Section */}
+        <section>
+          <div className="flex items-end justify-between mb-6 border-b border-[var(--border-primary)] pb-4">
+            <div>
+              <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-[var(--success)] rounded-full" />
+                场景概念 (Locations)
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">为剧本场景生成环境参考图</p>
+            </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleAddScene}
+                disabled={!!batchProgress}
+                className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <MapPin className="w-3 h-3" />
+                新建场景
+              </button>
+              <button 
+                onClick={() => openLibrary('scene')}
+                disabled={!!batchProgress}
+                className={STYLES.secondaryButton}
+              >
+                <Archive className="w-3 h-3" />
+                从资产库选择
+              </button>
+              <button 
+                onClick={() => handleBatchGenerate('scene')}
+                disabled={!!batchProgress}
+                className={allScenesReady ? STYLES.secondaryButton : STYLES.primaryButton}
+              >
+                {allScenesReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+                {allScenesReady ? '重新生成所有场景' : '一键生成所有场景'}
+              </button>
+            </div>
+          </div>
+
+          <div className={GRID_LAYOUTS.cards}>
+            {project.scriptData.scenes.map((scene) => (
+              <SceneCard
+                key={scene.id}
+                scene={scene}
+                isGenerating={scene.status === 'generating'}
+                onGenerate={() => handleGenerateAsset('scene', scene.id)}
+                onUpload={(file) => handleUploadSceneImage(scene.id, file)}
+                onPromptSave={(newPrompt) => handleSaveScenePrompt(scene.id, newPrompt)}
+                onImageClick={setPreviewImage}
+                onDelete={() => handleDeleteScene(scene.id)}
+                onUpdateInfo={(updates) => handleUpdateSceneInfo(scene.id, updates)}
+                onAddToLibrary={() => handleAddSceneToLibrary(scene)}
+                onReplaceFromLibrary={() => openLibrary('scene', 'scene', scene.id)}
+              />
+            ))}
+          </div>
+        </section>
+
+        {/* Props Section */}
+        <section>
+          <div className="flex items-end justify-between mb-6 border-b border-[var(--border-primary)] pb-4">
+            <div>
+              <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-purple-500 rounded-full" />
+                道具库 (Props)
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">管理分镜中需要保持一致性的道具/物品</p>
+            </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleAddProp}
+                disabled={!!batchProgress}
+                className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Package className="w-3 h-3" />
+                新建道具
+              </button>
+              <button 
+                onClick={() => openLibrary('prop')}
+                disabled={!!batchProgress}
+                className={STYLES.secondaryButton}
+              >
+                <Archive className="w-3 h-3" />
+                从资产库选择
+              </button>
+              {(project.scriptData.props || []).length > 0 && (
+                <button 
+                  onClick={handleBatchGenerateProps}
+                  disabled={!!batchProgress}
+                  className={allPropsReady ? STYLES.secondaryButton : STYLES.primaryButton}
+                >
+                  {allPropsReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+                  {allPropsReady ? '重新生成所有道具' : '一键生成所有道具'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {(project.scriptData.props || []).length === 0 ? (
+            <div className="border border-dashed border-[var(--border-primary)] rounded-xl p-10 text-center text-[var(--text-muted)] text-sm">
+              暂无道具。点击"新建道具"添加需要在多个分镜中保持一致的物品。
+            </div>
+          ) : (
+            <div className={GRID_LAYOUTS.cards}>
+              {(project.scriptData.props || []).map((prop) => (
+                <PropCard
+                  key={prop.id}
+                  prop={prop}
+                  isGenerating={prop.status === 'generating'}
+                  onGenerate={() => handleGeneratePropAsset(prop.id)}
+                  onUpload={(file) => handleUploadPropImage(prop.id, file)}
+                  onPromptSave={(newPrompt) => handleSavePropPrompt(prop.id, newPrompt)}
+                  onImageClick={setPreviewImage}
+                  onDelete={() => handleDeleteProp(prop.id)}
+                  onUpdateInfo={(updates) => handleUpdatePropInfo(prop.id, updates)}
+                  onAddToLibrary={() => handleAddPropToLibrary(prop)}
+                  onReplaceFromLibrary={() => openLibrary('prop', 'prop', prop.id)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+    </div>
+  );
+};
+
+export default StageAssets;
