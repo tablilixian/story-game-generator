@@ -103,12 +103,20 @@ function App() {
   }, []);
   */
 
-  // Redirect to login if not authenticated
+  // ============================================================================
+  // 认证逻辑 - 本地模式已禁用云端认证
+  // ============================================================================
+  // 由于使用本地模式（禁用 Supabase），用户始终为本地虚拟用户
+  // 不再需要跳转到登录页面
+  
+  // Redirect to login if not authenticated (已禁用 - 本地模式不需要登录)
+  /*
   useEffect(() => {
     if (!authLoading && !user && authView === 'app') {
       setAuthView('login');
     }
   }, [user, authLoading, authView]);
+  */
 
   // Detect mobile device on mount
   useEffect(() => {

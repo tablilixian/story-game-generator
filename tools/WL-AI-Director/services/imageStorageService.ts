@@ -1,4 +1,11 @@
-import { supabase } from '../src/api/supabase';
+// ============================================================================
+// ImageStorageService - 图片存储服务（已禁用云端功能）
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 云端存储逻辑
+// 如需重新启用云端存储，请还原此文件
+// ============================================================================
+
+// import { supabase } from '../src/api/supabase';
 import { useAuthStore } from '../src/stores/authStore';
 import { DB_NAME, DB_VERSION, STORE_NAMES } from './dbConfig';
 import { logger, LogCategory } from './logger';
@@ -21,6 +28,11 @@ export interface LocalVideo {
 }
 
 const openDB = openDBFromStorageService;
+
+// 生成唯一图片ID
+export const generateImageId = (): string => {
+  return `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+};
 
 export const imageStorageService = {
   async saveImage(id: string, blob: Blob): Promise<void> {
@@ -88,7 +100,15 @@ export const imageStorageService = {
     });
   },
 
+  /**
+   * 上传图片到云端
+   * 
+   * ⚠️ 云端同步功能已禁用，此函数不再可用
+   */
   async uploadToCloud(id: string, blob: Blob, path: string): Promise<string> {
+    logger.debug(LogCategory.IMAGE, `☁️ 云端上传已禁用: ${id}, 路径: ${path}`);
+    throw new Error('云端上传功能已禁用，请使用本地存储');
+    /*
     logger.debug(LogCategory.IMAGE, `☁️ 上传图片到云端: ${id}, 路径: ${path}`);
     
     const { user } = useAuthStore.getState();
@@ -127,6 +147,7 @@ export const imageStorageService = {
 
     logger.debug(LogCategory.IMAGE, `✅ 图片上传成功: ${publicUrl}`);
     return publicUrl;
+    */
   },
 
   async cleanOldImages(maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<number> {
@@ -178,9 +199,9 @@ export const imageStorageService = {
   }
 };
 
-export const generateImageId = (): string => {
-  return `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-};
+// ============================================================================
+// VideoStorageService - 视频存储服务（本地模式）
+// ============================================================================
 
 export const videoStorageService = {
   async saveVideo(id: string, blob: Blob): Promise<void> {
@@ -248,44 +269,6 @@ export const videoStorageService = {
     });
   },
 
-  async getVideoUrl(id: string): Promise<string | null> {
-    const blob = await this.getVideo(id);
-    if (!blob) {
-      return null;
-    }
-    return URL.createObjectURL(blob);
-  },
-
-  async cleanOldVideos(maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<number> {
-    logger.debug(LogCategory.VIDEO, `🧹 清理过期视频，最大年龄: ${maxAge} ms`);
-    
-    const db = await openDB();
-    const tx = db.transaction(STORE_NAMES.VIDEOS, 'readwrite');
-    const store = tx.objectStore(STORE_NAMES.VIDEOS);
-    const index = store.index('createdAt');
-    
-    const cutoffTime = Date.now() - maxAge;
-    let deletedCount = 0;
-
-    return new Promise((resolve, reject) => {
-      const request = index.openCursor(IDBKeyRange.upperBound(cutoffTime));
-      
-      request.onsuccess = (event) => {
-        const cursor = (event.target as IDBRequest).result;
-        if (cursor) {
-          cursor.delete();
-          deletedCount++;
-          cursor.continue();
-        } else {
-          logger.debug(LogCategory.VIDEO, `✅ 清理完成，删除了 ${deletedCount} 个视频`);
-          resolve(deletedCount);
-        }
-      };
-      
-      request.onerror = () => reject(request.error);
-    });
-  },
-
   async getAllVideos(): Promise<LocalVideo[]> {
     logger.debug(LogCategory.VIDEO, '📋 获取所有本地视频');
     
@@ -303,8 +286,4 @@ export const videoStorageService = {
       request.onerror = () => reject(request.error);
     });
   }
-};
-
-export const generateVideoId = (): string => {
-  return `vid_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 };

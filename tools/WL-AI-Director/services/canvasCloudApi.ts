@@ -1,11 +1,11 @@
-/**
- * 画布云端 API
- * 
- * 负责与 Supabase canvas_data 表的交互
- * 所有方法都设计为"失败安全"：错误时抛出异常，由调用方决定如何处理
- */
+// ============================================================================
+// 画布云端 API - 已禁用云端功能
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 云端逻辑
+// 如需重新启用云端画布API，请还原此文件
+// ============================================================================
 
-import { supabase } from '../src/api/supabase';
+// import { supabase } from '../src/api/supabase';
 import { logger, LogCategory } from './logger';
 
 /**
@@ -36,7 +36,7 @@ interface SupabaseCanvasData {
 }
 
 /**
- * 画布云端 API
+ * 画布云端 API（本地模式）
  */
 export const canvasCloudApi = {
   /**
@@ -47,6 +47,9 @@ export const canvasCloudApi = {
    * @throws 网络错误或权限错误
    */
   async get(projectId: string): Promise<CloudCanvasData | null> {
+    logger.warn(LogCategory.CANVAS, `[CanvasCloudApi] ☁️ 云端画布已禁用`);
+    return null;
+    /*
     logger.debug(LogCategory.CANVAS, `[CanvasCloudApi] 获取云端画布数据，项目: ${projectId}`);
     
     try {
@@ -85,6 +88,7 @@ export const canvasCloudApi = {
       logger.error(LogCategory.CANVAS, `[CanvasCloudApi] 获取失败:`, error);
       throw error;
     }
+    */
   },
 
   /**
@@ -94,6 +98,9 @@ export const canvasCloudApi = {
    * @throws 网络错误或权限错误
    */
   async save(data: CloudCanvasData): Promise<void> {
+    logger.warn(LogCategory.CANVAS, `[CanvasCloudApi] ☁️ 云端画布已禁用`);
+    // 不抛出错误，静默失败
+    /*
     logger.debug(LogCategory.CANVAS, `[CanvasCloudApi] 保存到云端，项目: ${data.projectId}, 版本: ${data.version}`);
     
     try {
@@ -119,15 +126,18 @@ export const canvasCloudApi = {
       logger.error(LogCategory.CANVAS, `[CanvasCloudApi] 保存失败:`, error);
       throw error;
     }
+    */
   },
 
   /**
    * 删除画布数据
    * 
    * @param projectId 项目 ID
-   * @throws 网络错误或权限错误
    */
   async delete(projectId: string): Promise<void> {
+    logger.warn(LogCategory.CANVAS, `[CanvasCloudApi] ☁️ 云端画布已禁用`);
+    // 不抛出错误
+    /*
     logger.debug(LogCategory.CANVAS, `[CanvasCloudApi] 删除云端画布数据，项目: ${projectId}`);
     
     try {
@@ -145,30 +155,6 @@ export const canvasCloudApi = {
       logger.error(LogCategory.CANVAS, `[CanvasCloudApi] 删除失败:`, error);
       throw error;
     }
-  },
-
-  /**
-   * 检查云端是否有画布数据
-   * 
-   * @param projectId 项目 ID
-   * @returns 是否存在
-   */
-  async exists(projectId: string): Promise<boolean> {
-    try {
-      const { data, error } = await supabase
-        .from('canvas_data')
-        .select('id')
-        .eq('project_id', projectId)
-        .maybeSingle();
-
-      if (error && error.code !== 'PGRST116') {
-        throw error;
-      }
-
-      return !!data;
-    } catch (error) {
-      logger.error(LogCategory.CANVAS, `[CanvasCloudApi] 检查存在失败:`, error);
-      return false;
-    }
-  },
+    */
+  }
 };

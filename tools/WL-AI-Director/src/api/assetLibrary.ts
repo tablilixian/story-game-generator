@@ -1,13 +1,25 @@
-import { supabase } from './supabase'
+// ============================================================================
+// Asset Library API - 已禁用云端功能
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 云端逻辑
+// 如需重新启用云端资产库，请还原此文件
+// ============================================================================
+
+// import { supabase } from './supabase'
 import type { AssetLibraryItem } from '../../types'
 
 // =====================================================
-// Asset Library API
+// Asset Library API（本地模式）
 // =====================================================
+// 云端功能已禁用，所有操作将返回错误或空数据
+// 实际数据操作通过 hybridStorageService 使用 IndexedDB
 
 export const assetLibraryApi = {
   // 获取用户所有资产库项目
   list: async (): Promise<AssetLibraryItem[]> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用，请使用本地 IndexedDB');
+    return [];
+    /*
     const { data, error } = await supabase
       .from('asset_library')
       .select('*')
@@ -29,10 +41,14 @@ export const assetLibraryApi = {
       updatedAt: new Date(item.updated_at).getTime(),
       data: item.data
     }))
+    */
   },
 
   // 获取单个资产库项目
   get: async (id: string): Promise<AssetLibraryItem | null> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用');
+    return null;
+    /*
     const { data, error } = await supabase
       .from('asset_library')
       .select('*')
@@ -57,10 +73,14 @@ export const assetLibraryApi = {
       updatedAt: new Date(data.updated_at).getTime(),
       data: data.data
     }
+    */
   },
 
   // 创建资产库项目
   create: async (item: AssetLibraryItem): Promise<AssetLibraryItem> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用，请使用本地存储');
+    return item;
+    /*
     const { data, error } = await supabase
       .from('asset_library')
       .insert({
@@ -89,10 +109,14 @@ export const assetLibraryApi = {
       updatedAt: new Date(data.updated_at).getTime(),
       data: data.data
     }
+    */
   },
 
   // 更新资产库项目
   update: async (id: string, updates: Partial<AssetLibraryItem>): Promise<AssetLibraryItem> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用');
+    throw new Error('云端资产库已禁用');
+    /*
     const updateData: any = {}
     if (updates.type !== undefined) updateData.type = updates.type
     if (updates.name !== undefined) updateData.name = updates.name
@@ -122,10 +146,14 @@ export const assetLibraryApi = {
       updatedAt: new Date(data.updated_at).getTime(),
       data: data.data
     }
+    */
   },
 
   // 删除资产库项目
   delete: async (id: string): Promise<void> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用');
+    // 不抛出错误，因为本地删除会成功
+    /*
     console.log('[AssetLibraryAPI] 🗑️ 尝试删除资产库项目:', id);
     console.log('[AssetLibraryAPI] Supabase 客户端状态:', supabase ? '已初始化' : '未初始化');
     
@@ -178,10 +206,14 @@ export const assetLibraryApi = {
     }
     
     console.log('[AssetLibraryAPI] ✅ 删除成功:', id, '| 影响的行数:', data?.length || 0);
+    */
   },
 
   // 批量创建资产库项目
   batchCreate: async (items: AssetLibraryItem[]): Promise<AssetLibraryItem[]> => {
+    console.warn('[AssetLibraryAPI] ☁️ 云端资产库已禁用');
+    return items;
+    /*
     const records = items.map(item => ({
       type: item.type,
       name: item.name,
@@ -210,30 +242,6 @@ export const assetLibraryApi = {
       updatedAt: new Date(item.updated_at).getTime(),
       data: item.data
     }))
-  },
-
-  // 按类型筛选资产库项目
-  listByType: async (type: 'character' | 'scene' | 'prop' | 'turnaround'): Promise<AssetLibraryItem[]> => {
-    const { data, error } = await supabase
-      .from('asset_library')
-      .select('*')
-      .eq('type', type)
-      .order('updated_at', { ascending: false })
-    
-    if (error) {
-      console.error('[AssetLibraryAPI] 获取资产库项目失败:', error)
-      throw error
-    }
-    
-    return (data || []).map(item => ({
-      id: item.id,
-      type: item.type,
-      name: item.name,
-      projectId: item.project_id,
-      projectName: item.project_name,
-      createdAt: new Date(item.created_at).getTime(),
-      updatedAt: new Date(item.updated_at).getTime(),
-      data: item.data
-    }))
+    */
   }
-}
+};

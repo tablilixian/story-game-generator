@@ -1,23 +1,150 @@
+// ============================================================================
+// 认证 Store - 已禁用云端认证功能
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 认证逻辑
+// 如需重新启用云端认证，请还原此文件
+// ============================================================================
+
 import { create } from 'zustand'
+/*
 import { supabase } from '../api/supabase'
 import type { User, Session } from '@supabase/supabase-js'
 import type { Profile } from '../types/supabase'
+*/
+
+// 本地模式下的空类型定义
+interface LocalUser {
+  id: string;
+  email: string;
+}
+
+interface LocalProfile {
+  id: string;
+  email: string;
+}
+
+interface LocalSession {
+  access_token: string;
+  user: LocalUser;
+}
 
 interface AuthState {
-  user: User | null
-  profile: Profile | null
-  session: Session | null
-  loading: boolean
-  error: string | null
+  user: LocalUser | null;
+  profile: LocalProfile | null;
+  session: LocalSession | null;
+  loading: boolean;
+  error: string | null;
   
   // Actions
-  initialize: () => Promise<void>
-  signIn: (email: string, password: string) => Promise<void>
-  signUp: (email: string, password: string) => Promise<void>
-  signOut: () => Promise<void>
-  updateProfile: (updates: Partial<Profile>) => Promise<void>
-  clearError: () => void
+  initialize: () => Promise<void>;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  updateProfile: (updates: Partial<LocalProfile>) => Promise<void>;
+  clearError: () => void;
 }
+
+// 创建本地虚拟用户（用于本地模式）
+const createLocalUser = (): LocalUser => ({
+  id: 'local-user-' + Date.now(),
+  email: 'local@example.com'
+});
+
+const createLocalProfile = (user: LocalUser): LocalProfile => ({
+  id: user.id,
+  email: user.email
+});
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+  user: null,
+  profile: null,
+  session: null,
+  loading: false,
+  error: null,
+  
+  initialize: async () => {
+    // 本地模式：直接使用本地用户，无需认证
+    console.log('[AuthStore] 本地模式：跳过云端认证');
+    
+    // 创建本地虚拟用户
+    const localUser = createLocalUser();
+    const localProfile = createLocalProfile(localUser);
+    
+    set({
+      user: localUser,
+      profile: localProfile,
+      session: { access_token: 'local-token', user: localUser },
+      loading: false,
+      error: null
+    });
+  },
+  
+  signIn: async (email: string, password: string) => {
+    // 本地模式：模拟登录成功
+    console.log('[AuthStore] 本地模式：模拟登录');
+    
+    const localUser = createLocalUser();
+    localUser.email = email;
+    const localProfile = createLocalProfile(localUser);
+    
+    set({
+      user: localUser,
+      profile: localProfile,
+      session: { access_token: 'local-token', user: localUser },
+      loading: false,
+      error: null
+    });
+  },
+  
+  signUp: async (email: string, password: string) => {
+    // 本地模式：模拟注册成功
+    console.log('[AuthStore] 本地模式：模拟注册');
+    
+    const localUser = createLocalUser();
+    localUser.email = email;
+    const localProfile = createLocalProfile(localUser);
+    
+    set({
+      user: localUser,
+      profile: localProfile,
+      session: { access_token: 'local-token', user: localUser },
+      loading: false,
+      error: null
+    });
+  },
+  
+  signOut: async () => {
+    // 本地模式：模拟登出
+    console.log('[AuthStore] 本地模式：模拟登出');
+    
+    // 创建新的本地虚拟用户，保持登录状态
+    const localUser = createLocalUser();
+    const localProfile = createLocalProfile(localUser);
+    
+    set({
+      user: localUser,
+      profile: localProfile,
+      session: { access_token: 'local-token', user: localUser },
+      loading: false,
+      error: null
+    });
+  },
+  
+  updateProfile: async (updates: Partial<LocalProfile>) => {
+    const { profile } = get();
+    if (!profile) return;
+    
+    // 本地模式：直接更新本地 profile
+    set({
+      profile: { ...profile, ...updates }
+    });
+  },
+  
+  clearError: () => set({ error: null })
+}));
+
+/*
+// 以下是原 Supabase 认证逻辑，已注释掉
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -196,3 +323,4 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   
   clearError: () => set({ error: null })
 }))
+*/

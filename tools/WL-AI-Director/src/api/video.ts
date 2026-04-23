@@ -1,4 +1,11 @@
-import { supabase } from './supabase'
+// ============================================================================
+// Video API - 已禁用云端功能
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 云端视频API逻辑
+// 如需重新启用云端视频API，请还原此文件
+// ============================================================================
+
+// import { supabase } from './supabase'
 
 const VERCEL_FUNCTION_URL = import.meta.env.VITE_VERCEL_FUNCTION_URL || ''
 
@@ -21,11 +28,16 @@ interface VideoStatusResponse {
 
 // 获取当前用户的访问令牌
 const getAccessToken = async (): Promise<string> => {
+  // 本地模式返回空令牌
+  console.warn('[VideoAPI] ☁️ 云端视频API已禁用');
+  return 'local-token';
+  /*
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) {
     throw new Error('Not authenticated')
   }
   return session.access_token
+  */
 }
 
 // 调用 Edge Function
@@ -33,6 +45,9 @@ const callEdgeFunction = async (
   functionName: string, 
   body?: Record<string, unknown>
 ): Promise<Response> => {
+  console.warn('[VideoAPI] ☁️ 云端视频API已禁用');
+  throw new Error('云端视频API已禁用');
+  /*
   const accessToken = await getAccessToken()
   
   const response = await fetch(
@@ -48,85 +63,56 @@ const callEdgeFunction = async (
   )
   
   return response
+  */
 }
 
-// =====================================================
-// Video Generation API
-// =====================================================
+// ============================================================================
+// Video API - 已禁用
+// ============================================================================
 
 export const videoApi = {
   // 生成视频
-  generate: async (request: GenerateVideoRequest): Promise<{ taskId: string }> => {
+  generateVideo: async (request: GenerateVideoRequest): Promise<{ taskId: string }> => {
+    console.warn('[VideoAPI] ☁️ 云端视频生成已禁用');
+    throw new Error('云端视频生成已禁用');
+    /*
     const response = await callEdgeFunction('generate-video', request)
     
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.error || 'Failed to generate video')
+      throw new Error(error.message || 'Failed to generate video')
     }
     
     const data = await response.json()
     return { taskId: data.taskId }
+    */
+    return { taskId: '' };
   },
 
   // 获取视频生成状态
-  getStatus: async (shotId: string): Promise<VideoStatusResponse> => {
-    const accessToken = await getAccessToken()
-    
-    const response = await fetch(
-      `${VERCEL_FUNCTION_URL}/functions/v1/get-video-status?shotId=${shotId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
-      }
-    )
+  getVideoStatus: async (shotId: string): Promise<VideoStatusResponse> => {
+    console.warn('[VideoAPI] ☁️ 云端视频API已禁用');
+    return {
+      shotId,
+      status: 'local_mode',
+      videoUrl: null,
+      taskId: null
+    };
+    /*
+    const response = await callEdgeFunction('get-video-status', { shotId })
     
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.error || 'Failed to get video status')
+      throw new Error(error.message || 'Failed to get video status')
     }
     
     return response.json()
+    */
   },
 
-  // 轮询等待视频生成完成
-  waitForCompletion: async (
-    shotId: string,
-    onStatusChange?: (status: string) => void,
-    maxAttempts: number = 120,
-    interval: number = 3000
-  ): Promise<string> => {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const status = await videoApi.getStatus(shotId)
-      
-      onStatusChange?.(status.status)
-      
-      if (status.status === 'completed') {
-        return status.videoUrl!
-      }
-      
-      if (status.status === 'failed') {
-        throw new Error('Video generation failed')
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, interval))
-    }
-    
-    throw new Error('Video generation timeout')
+  // 取消视频生成
+  cancelVideoGeneration: async (taskId: string): Promise<void> => {
+    console.warn('[VideoAPI] ☁️ 云端视频API已禁用');
+    // 不抛出错误
   }
-}
-
-// =====================================================
-// AI Image Generation API (可选)
-// =====================================================
-
-export const imageApi = {
-  // 生成图片 (可扩展)
-  generate: async (prompt: string, options?: {
-    model?: string
-    aspectRatio?: string
-  }) => {
-    // TODO: 实现图片生成 Edge Function
-    throw new Error('Not implemented yet')
-  }
-}
+};

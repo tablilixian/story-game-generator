@@ -84,7 +84,7 @@ class CanvasSyncService {
     cloudSyncDelay: 10000,
     cloudSyncRetryTimes: 3,
     cloudSyncRetryDelay: 5000,
-    cloudSyncEnabled: true,
+    cloudSyncEnabled: false, // 本地模式已禁用云端同步
   };
 
   private state: SyncState = {
@@ -100,7 +100,8 @@ class CanvasSyncService {
   private pendingSaveData: { layers: any[]; offset: { x: number; y: number }; scale: number } | null = null;
 
   constructor() {
-    this.config.cloudSyncEnabled = getStoredSyncConfig().enabled;
+    // 本地模式：禁用云端同步，不从存储加载配置
+    // this.config.cloudSyncEnabled = getStoredSyncConfig().enabled;
   }
 
   /**

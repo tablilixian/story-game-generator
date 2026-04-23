@@ -1,15 +1,14 @@
-/**
- * HybridStorageService - 混合存储服务
- * 
- * 优先从 Supabase 读取（云端同步）
- * 回退到 IndexedDB（本地缓存）
- * 写入时双写（保持一致性）
- */
+// ============================================================================
+// HybridStorageService - 混合存储服务（已禁用云端功能）
+// ============================================================================
+// 为保持代码兼容性，禁用所有 Supabase 云端同步逻辑
+// 如需重新启用云端同步，请还原此文件
+// ============================================================================
 
-import { supabase } from '../src/api/supabase';
+// import { supabase } from '../src/api/supabase';
 import { useAuthStore } from '../src/stores/authStore';
-import { assetLibraryApi } from '../src/api/assetLibrary';
-import { storageApi } from '../src/api/storage';
+// import { assetLibraryApi } from '../src/api/assetLibrary';
+// import { storageApi } from '../src/api/storage';
 import type { ProjectState, AssetLibraryItem, Character, Scene, Prop } from '../types';
 import { logger, LogCategory } from './logger';
 
@@ -169,6 +168,10 @@ class HybridStorageService {
       return getAllProjectsMetadata();
     }
 
+    // ============================================================================
+    // 云端同步功能已禁用 - 直接使用本地 IndexedDB
+    // ============================================================================
+    /*
     try {
       logger.debug(LogCategory.STORAGE, '检查 supabase 客户端...');
 
@@ -250,6 +253,11 @@ class HybridStorageService {
       // 出错也回退到本地
       return getAllProjectsMetadata();
     }
+    */
+   
+    // 云端功能已禁用，直接使用本地
+    logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，使用本地 IndexedDB');
+    return getAllProjectsMetadata();
   }
 
   /**
@@ -300,6 +308,10 @@ class HybridStorageService {
       return loadProjectFromDB(id);
     }
 
+    // ============================================================================
+    // 云端同步功能已禁用 - 直接使用本地 IndexedDB
+    // ============================================================================
+    /*
     try {
       const { data, error } = await supabase
         .from('projects')
@@ -319,6 +331,11 @@ class HybridStorageService {
       logger.error(LogCategory.STORAGE, '获取云端项目详情失败:', error);
       return loadProjectFromDB(id);
     }
+    */
+    
+    // 云端功能已禁用，直接使用本地
+    logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，使用本地 IndexedDB');
+    return loadProjectFromDB(id);
   }
 
   /**
@@ -383,6 +400,10 @@ class HybridStorageService {
         }
         */
         
+        // ============================================================================
+        // 云端同步功能已禁用
+        // ============================================================================
+        /*
         // 直接使用项目ID（不再处理旧格式）
         const cloudId = project.id;
         
@@ -420,6 +441,9 @@ class HybridStorageService {
           this.releaseLock(cloudId);
           logger.debug(LogCategory.STORAGE, '🔓 释放锁');
         }
+        */
+       
+        logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，跳过云端保存');
       } catch (error) {
         logger.error(LogCategory.STORAGE, '❌ 同步到云端失败:', error);
         // 本地保存成功，云端失败不影响
@@ -499,6 +523,10 @@ class HybridStorageService {
         }
         */
         
+        // ============================================================================
+        // 云端同步功能已禁用
+        // ============================================================================
+        /*
         // 直接使用项目ID删除（不再处理旧格式）
         const { error } = await supabase
           .from('projects')
@@ -508,6 +536,9 @@ class HybridStorageService {
 
         if (error) throw error;
         logger.debug(LogCategory.STORAGE, `项目 ${id} 已从云端删除`);
+        */
+       
+        logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，跳过云端删除');
       } catch (error) {
         logger.error(LogCategory.STORAGE, '从云端删除失败:', error);
       }
@@ -529,97 +560,12 @@ class HybridStorageService {
       return { uploaded: 0, downloaded: 0, conflicts: 0 };
     }
 
-    logger.debug(LogCategory.STORAGE, '========== 登录时双向同步开始 ==========');
-    
-    const result = { uploaded: 0, downloaded: 0, conflicts: 0 };
-
-    try {
-      logger.debug(LogCategory.STORAGE, '获取本地项目列表...');
-      const localProjects = await getAllProjectsMetadata();
-      logger.debug(LogCategory.STORAGE, `本地项目数量: ${localProjects.length}`);
-      logger.debug(LogCategory.STORAGE, '获取云端项目列表...');
-      const { data: cloudProjects, error: cloudError } = await supabase
-        .from('projects')
-        .select('id, title, version, updated_at, data')
-        .eq('user_id', user.id)
-        .order('updated_at', { ascending: false });
-
-      if (cloudError) {
-        logger.error(LogCategory.STORAGE, '获取云端项目失败:', cloudError);
-        throw cloudError;
-      }
-
-      const cloudProjectList = cloudProjects || [];
-      logger.debug(LogCategory.STORAGE, `云端项目数量: ${cloudProjectList.length}`);
-
-      const cloudMap = new Map<string, { id: string; title: string; version: number; lastModified: number; data: ProjectState }>();
-
-      for (const cp of cloudProjectList) {
-        // 使用 data 字段存储项目数据
-        const cloudData = cp.data;
-        if (cloudData) {
-          cloudMap.set(cp.title, {
-            id: cp.id,
-            title: cp.title,
-            version: cp.version || 1,
-            lastModified: new Date(cp.updated_at).getTime(),
-            data: cloudData
-          });
-        }
-      }
-
-      for (const localMeta of localProjects) {
-        const localFull = await loadProjectFromDB(localMeta.id);
-        if (!localFull) continue;
-
-        const cloudProject = cloudMap.get(localFull.title);
-
-        if (!cloudProject) {
-          logger.debug(LogCategory.STORAGE, `⬆️  云端无此项目，推送本地: ${localFull.title}`);
-          await this.saveProject(localFull);
-          result.uploaded++;
-        } else {
-          const localVersion = localFull.version || 1;
-          const cloudVersion = cloudProject.version || 1;
-          const localTime = localFull.lastModified;
-          const cloudTime = cloudProject.lastModified;
-
-          logger.debug(LogCategory.STORAGE, `🔄 比较项目: ${localFull.title}`);
-          logger.debug(LogCategory.STORAGE, `  本地: version=${localVersion}, time=${localTime}`);
-          logger.debug(LogCategory.STORAGE, `  云端: version=${cloudVersion}, time=${cloudTime}`);
-
-          if (localVersion > cloudVersion || (localVersion === cloudVersion && localTime > cloudTime)) {
-            logger.debug(LogCategory.STORAGE, `⬆️  本地比云端新，推送本地到云端`);
-            const localToCloud = { ...localFull, id: cloudProject.id };
-            await this.saveProject(localToCloud);
-            result.uploaded++;
-          } else if (cloudVersion > localVersion || (cloudVersion === localVersion && cloudTime > localTime)) {
-            logger.debug(LogCategory.STORAGE, `⬇️  云端比本地新，下载到本地`);
-            const cloudToLocal = { ...cloudProject.data, id: localMeta.id };
-            await saveProjectToDB(cloudToLocal);
-            result.downloaded++;
-          } else {
-            logger.debug(LogCategory.STORAGE, `✅ 版本相同，无需同步: ${localFull.title}`);
-          }
-        }
-
-        cloudMap.delete(localFull.title);
-      }
-
-      for (const [title, cloudProj] of cloudMap) {
-        logger.debug(LogCategory.STORAGE, `⬇️  本地无此项目，从云端下载: ${title}`);
-        await saveProjectToDB(cloudProj.data);
-        result.downloaded++;
-      }
-
-      logger.debug(LogCategory.STORAGE, `========== 登录同步完成 ==========`);
-      logger.debug(LogCategory.STORAGE, `上传: ${result.uploaded}, 下载: ${result.downloaded}, 冲突: ${result.conflicts}`);
-
-      return result;
-    } catch (error) {
-      logger.error(LogCategory.STORAGE, '登录同步失败:', error);
-      return result;
-    }
+    // ============================================================================
+    // 云端同步功能已禁用
+    // ============================================================================
+    logger.debug(LogCategory.STORAGE, '========== 登录时双向同步（已禁用云端）==========');
+    logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，跳过同步');
+    return { uploaded: 0, downloaded: 0, conflicts: 0 };
   }
 
 
@@ -634,6 +580,12 @@ class HybridStorageService {
       return 0;
     }
 
+    // ============================================================================
+    // 云端同步功能已禁用
+    // ============================================================================
+    logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，跳过导出');
+    return 0;
+    /*
     const localProjects = await getAllProjectsMetadata();
     let exportedCount = 0;
 
@@ -647,6 +599,7 @@ class HybridStorageService {
 
     logger.debug(LogCategory.STORAGE, `导出完成: ${exportedCount} 个项目`);
     return exportedCount;
+    */
   }
 
   /**
@@ -680,11 +633,17 @@ class HybridStorageService {
   /**
    * 获取所有素材库项目（云端 + 本地 IndexedDB）
    * 优先从云端获取，云端不可用时回退到本地
+   * 
+   * ⚠️ 云端同步功能已禁用，仅使用本地 IndexedDB
    */
   async getAllAssetLibraryItems(): Promise<AssetLibraryItem[]> {
     logger.debug(LogCategory.STORAGE, '获取素材库项目...');
     logger.debug(LogCategory.STORAGE, `用户登录状态: ${this.isOnline()}`);
     
+    // ============================================================================
+    // 云端同步功能已禁用 - 直接使用本地 IndexedDB
+    // ============================================================================
+    /*
     // 如果在线，优先从云端获取
     if (this.isOnline()) {
       try {
@@ -711,9 +670,10 @@ class HybridStorageService {
     } else {
       logger.debug(LogCategory.STORAGE, '用户未登录，直接使用本地 IndexedDB');
     }
+    */
     
-    // 回退到本地 IndexedDB
-    logger.debug(LogCategory.STORAGE, '从本地 IndexedDB 获取素材库项目...');
+    // 直接使用本地 IndexedDB
+    logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，从本地 IndexedDB 获取...');
     const localItems = await getAllAssetLibraryItemsFromDB();
     logger.debug(LogCategory.STORAGE, `从本地 IndexedDB 获取 ${localItems.length} 个素材库项目`);
     return localItems;
@@ -723,10 +683,16 @@ class HybridStorageService {
    * 保存素材库项目（云端 + 本地 IndexedDB）
    * 双写策略：同时保存到云端和本地
    * 注意：使用统一的 UUID，本地和云端 ID 一致
+   * 
+   * ⚠️ 云端同步功能已禁用，仅保存到本地 IndexedDB
    */
   async saveAssetToLibrary(item: AssetLibraryItem): Promise<void> {
     logger.debug(LogCategory.STORAGE, '保存素材库项目:', item.name);
     
+    // ============================================================================
+    // 云端同步功能已禁用 - 仅保存到本地 IndexedDB
+    // ============================================================================
+    /*
     // 先保存到本地 IndexedDB
     try {
       await saveAssetToLibraryToDB(item);
@@ -745,12 +711,30 @@ class HybridStorageService {
         logger.error(LogCategory.STORAGE, '同步素材库项目到云端失败:', error);
       }
     }
+    */
+   
+    // 仅保存到本地 IndexedDB
+    try {
+      await saveAssetToLibraryToDB(item);
+      logger.debug(LogCategory.STORAGE, '☁️ 云端同步已禁用，素材库项目已保存到本地 IndexedDB, ID:', item.id);
+    } catch (error) {
+      logger.error(LogCategory.STORAGE, '保存素材库项目到本地失败:', error);
+    }
   }
 
+  /**
+   * 删除素材库项目
+   * 
+   * ⚠️ 云端同步功能已禁用，仅删除本地 IndexedDB
+   */
   async deleteAssetFromLibrary(id: string): Promise<void> {
     console.log('[Storage] 🗑️ 开始删除素材库项目:', id);
     console.log('[Storage] 当前在线状态:', this.isOnline());
     
+    // ============================================================================
+    // 云端同步功能已禁用 - 仅删除本地 IndexedDB
+    // ============================================================================
+    /*
     let imageUrl: string | undefined;
     
     const item = await assetLibraryApi.get(id);
@@ -758,6 +742,7 @@ class HybridStorageService {
       const data = item.data as Character | Scene | Prop;
       imageUrl = data?.imageUrl;
     }
+    */
     
     try {
       console.log('[Storage] 开始从本地 IndexedDB 删除:', id);
@@ -767,6 +752,7 @@ class HybridStorageService {
       console.error('[Storage] ❌ 从本地删除素材库项目失败:', error);
     }
     
+    /*
     if (this.isOnline()) {
       console.log('[Storage] 尝试从云端删除:', id);
       try {
@@ -794,6 +780,9 @@ class HybridStorageService {
     } else {
       console.warn('[Storage] ⚠️ 用户未在线，仅删除本地数据');
     }
+    */
+   
+    console.log('[Storage] ☁️ 云端同步已禁用，仅删除本地数据');
   }
 }
 
