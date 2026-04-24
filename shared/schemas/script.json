@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VisualNovelScript",
+  "description": "视觉小说剧本数据结构",
+  "type": "object",
+  "properties": {
+    "characters": {
+      "type": "object",
+      "description": "角色定义，键为英文键名",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "color": { "type": "string" },
+          "directory": { "type": "string" },
+          "sprites": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    },
+    "scenes": {
+      "type": "object",
+      "description": "场景定义，键为英文键名",
+      "additionalProperties": {
+        "type": "string",
+        "description": "场景图片路径或占位颜色"
+      }
+    },
+    "music": {
+      "type": "object",
+      "description": "音乐定义",
+      "additionalProperties": { "type": "string" }
+    },
+    "script": {
+      "type": "object",
+      "description": "剧本脚本，键为标签名",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object" }
+          ]
+        }
+      }
+    }
+  }
+}

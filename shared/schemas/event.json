@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Event",
+  "description": "事件数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "事件唯一标识"
+    },
+    "summary": {
+      "type": "string",
+      "description": "事件概要"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["战斗", "成长", "社交", "旅行", "其他"],
+      "description": "事件类型"
+    },
+    "importance": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "重要程度：high=主线关键，medium=推动情节，low=日常过渡"
+    },
+    "participants": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "参与者名称列表"
+    },
+    "location": {
+      "type": "string",
+      "description": "发生地点"
+    },
+    "chapter_ref": {
+      "type": "string",
+      "description": "关联的章节ID"
+    }
+  },
+  "required": ["summary", "type", "participants", "location"]
+}

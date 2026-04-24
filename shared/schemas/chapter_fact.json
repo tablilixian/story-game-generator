@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChapterFact",
+  "description": "章节事实数据结构 - 整合 AI-Reader-V2 ChapterFact 所有模型",
+  "type": "object",
+  "properties": {
+    "chapter_id": {
+      "type": "integer",
+      "description": "章节编号"
+    },
+    "novel_id": {
+      "type": "string",
+      "description": "小说ID"
+    },
+    "characters": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/CharacterFact" },
+      "description": "本章出场的角色"
+    },
+    "relationships": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/RelationshipFact" },
+      "description": "本章出现的关系"
+    },
+    "locations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/LocationFact" },
+      "description": "本章出现的地点"
+    },
+    "spatial_relationships": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/SpatialRelationship" },
+      "description": "地点之间的空间关系"
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/EventFact" },
+      "description": "本章发生的事件"
+    },
+    "new_concepts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ConceptFact" },
+      "description": "本章出现的新概念"
+    },
+    "world_declarations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/WorldDeclaration" },
+      "description": "世界观声明"
+    }
+  },
+  "definitions": {
+    "CharacterFact": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "new_aliases": { "type": "array", "items": { "type": "string" } },
+        "appearance": { "type": "string" },
+        "abilities_gained": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "dimension": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "locations_in_chapter": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name"]
+    },
+    "RelationshipFact": {
+      "type": "object",
+      "properties": {
+        "person_a": { "type": "string" },
+        "person_b": { "type": "string" },
+        "relation_type": { "type": "string" },
+        "is_new": { "type": "boolean" },
+        "previous_type": { "type": "string" },
+        "evidence": { "type": "string" }
+      },
+      "required": ["person_a", "person_b", "relation_type"]
+    },
+    "LocationFact": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "parent": { "type": "string" },
+        "peers": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "role": { "type": "string", "enum": ["setting", "referenced", "boundary"] }
+      },
+      "required": ["name", "type"]
+    },
+    "SpatialRelationship": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "relation_type": { "type": "string" },
+        "value": { "type": "string" },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+        "narrative_evidence": { "type": "string" },
+        "distance_class": { "type": "string" },
+        "confidence_score": { "type": "number" },
+        "waypoints": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["source", "target", "relation_type", "value"]
+    },
+    "EventFact": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "type": { "type": "string", "enum": ["战斗", "成长", "社交", "旅行", "其他"] },
+        "importance": { "type": "string", "enum": ["high", "medium", "low"] },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "location": { "type": "string" }
+      },
+      "required": ["summary", "type", "participants", "location"]
+    },
+    "ConceptFact": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "definition": { "type": "string" },
+        "related": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "category"]
+    },
+    "WorldDeclaration": {
+      "type": "object",
+      "properties": {
+        "declaration_type": {
+          "type": "string",
+          "enum": ["region_division", "layer_exists", "portal", "region_position"]
+        },
+        "content": { "type": "object" },
+        "narrative_evidence": { "type": "string" },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+      },
+      "required": ["declaration_type", "content"]
+    }
+  },
+  "required": ["chapter_id", "novel_id"]
+}

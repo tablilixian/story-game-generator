@@ -1,0 +1,325 @@
+"""Async LLM client with Ollama and OpenAI-compatible API support."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import httpx
+
+from src.infra.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL, OLLAMA_MODEL
+
+if TYPE_CHECKING:
+    from src.infra.anthropic_client import AnthropicClient
+    from src.infra.openai_client import OpenAICompatibleClient
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LlmUsage:
+    """Token usage from an LLM call."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+# Global semaphore to serialize Ollama calls (single GPU processes one request at a time).
+# Without this, concurrent novel analyses cause timeout cascades.
+_llm_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Lazily create semaphore in the running event loop."""
+    global _llm_semaphore
+    if _llm_semaphore is None:
+        _llm_semaphore = asyncio.Semaphore(1)
+    return _llm_semaphore
+
+
+class LLMError(Exception):
+    """Base exception for LLM client errors."""
+
+
+class LLMTimeoutError(LLMError):
+    """Raised when LLM request times out."""
+
+
+class LLMParseError(LLMError):
+    """Raised when JSON parsing of LLM response fails."""
+
+
+def _strip_thinking(text: str) -> str:
+    """Strip <think>...</think> blocks, including unclosed ones (truncated responses)."""
+    # First strip closed <think>...</think> blocks
+    result = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    # Then strip unclosed <think> blocks (response truncated before </think>)
+    result = re.sub(r"<think>[\s\S]*$", "", result)
+    return result
+
+
+def _extract_json(text: str) -> dict:
+    """Try to extract JSON from text that may contain markdown fences or extra text."""
+    # Strip <think>...</think> blocks (reasoning/thinking mode output from some LLMs)
+    cleaned = _strip_thinking(text)
+    # Strip markdown code fences
+    cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
+    cleaned = cleaned.strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find JSON object {...} or array [{...}]
+    for pattern in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
+        match = re.search(pattern, cleaned)
+        if match:
+            try:
+                parsed = json.loads(match.group())
+                # If LLM returned array, extract first dict element
+                if isinstance(parsed, list):
+                    dicts = [x for x in parsed if isinstance(x, dict)]
+                    if dicts:
+                        return dicts[0]
+                return parsed
+            except json.JSONDecodeError:
+                continue
+
+    # Try to repair truncated JSON (output hit max_tokens limit)
+    # Find the last valid JSON object by progressively closing brackets
+    if cleaned.startswith("{") or cleaned.startswith("["):
+        repair_text = cleaned
+        for attempt in range(10):
+            # Count unclosed brackets and try to close them
+            opens = repair_text.count("{") - repair_text.count("}")
+            open_arr = repair_text.count("[") - repair_text.count("]")
+            suffix = "]" * max(open_arr, 0) + "}" * max(opens, 0)
+            if not suffix:
+                break
+            try:
+                repaired = json.loads(repair_text + suffix)
+                logger.warning("Repaired truncated JSON (added %d closing brackets, attempt %d)", len(suffix), attempt)
+                if isinstance(repaired, list):
+                    dicts = [x for x in repaired if isinstance(x, dict)]
+                    if dicts:
+                        return dicts[0]
+                return repaired
+            except json.JSONDecodeError:
+                # Remove trailing partial value and retry
+                repair_text = repair_text.rsplit(",", 1)[0] if "," in repair_text else repair_text[:-1]
+                continue
+
+        # Last resort: find the largest parseable JSON object substring
+        # Scan for balanced { ... } blocks from the start
+        brace_depth = 0
+        last_valid_end = -1
+        for i, c in enumerate(cleaned):
+            if c == "{":
+                brace_depth += 1
+            elif c == "}":
+                brace_depth -= 1
+                if brace_depth == 0:
+                    last_valid_end = i + 1
+                    break  # Found first complete top-level object
+        if last_valid_end > 0:
+            try:
+                result = json.loads(cleaned[:last_valid_end])
+                logger.warning("Extracted first complete JSON object (%d chars)", last_valid_end)
+                if isinstance(result, list):
+                    dicts = [x for x in result if isinstance(x, dict)]
+                    if dicts:
+                        return dicts[0]
+                return result
+            except json.JSONDecodeError:
+                pass
+
+    # Show cleaned text in error (not raw <think> output which is useless noise)
+    raise LLMParseError(f"Failed to extract JSON from LLM response: {cleaned[:200]}...")
+
+
+class LLMClient:
+    """Async client for Ollama API with structured output support."""
+
+    def __init__(
+        self,
+        base_url: str = OLLAMA_BASE_URL,
+        model: str = OLLAMA_MODEL,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    async def generate(
+        self,
+        system: str,
+        prompt: str,
+        format: dict | None = None,
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+        timeout: int = 120,
+        num_ctx: int | None = None,
+    ) -> tuple[str | dict, LlmUsage]:
+        """Call Ollama chat API. Returns (content, usage) tuple.
+
+        Content is dict when format is given, str otherwise.
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+        options: dict = {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        }
+        # Allow caller to override context window (default 4096 is too small for
+        # long chapters + system prompt + schema in structured output mode)
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
+        payload: dict = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "think": False,  # Disable thinking mode (qwen3) to get content directly
+            "options": options,
+        }
+        if format is not None:
+            payload["format"] = format
+
+        sem = _get_semaphore()
+        async with sem:
+            logger.debug("LLM semaphore acquired for generate()")
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(timeout, connect=10.0)
+                ) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/api/chat",
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+            except httpx.TimeoutException as exc:
+                raise LLMTimeoutError(
+                    f"Ollama request timed out after {timeout}s"
+                ) from exc
+            except httpx.HTTPStatusError as exc:
+                raise LLMError(
+                    f"Ollama HTTP error {exc.response.status_code}: {exc.response.text[:300]}"
+                ) from exc
+
+        data = resp.json()
+        content: str = data.get("message", {}).get("content", "")
+        if not content:
+            raise LLMError("Empty response from Ollama")
+
+        # Parse token usage from Ollama response
+        prompt_tokens = data.get("prompt_eval_count", 0)
+        completion_tokens = data.get("eval_count", 0)
+        usage = LlmUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+
+        if format is not None:
+            # Strip thinking blocks before parsing (qwen3 may emit <think> despite think:false)
+            content = _strip_thinking(content).strip()
+            try:
+                return json.loads(content), usage
+            except json.JSONDecodeError:
+                return _extract_json(content), usage
+
+        return content, usage
+
+    async def generate_stream(
+        self,
+        system: str,
+        prompt: str,
+        timeout: int = 180,
+    ) -> AsyncIterator[str]:
+        """Stream tokens from Ollama chat API.
+
+        NOTE: This method does NOT acquire the LLM semaphore. Chat/QA streaming
+        must remain responsive even when analysis is running. Ollama handles
+        concurrent request queueing internally — the chat request will wait in
+        Ollama's queue until the current analysis chunk finishes, then stream
+        immediately. This avoids indefinite Python-level blocking.
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "think": False,  # Disable thinking mode (qwen3) for streaming
+        }
+
+        logger.debug("generate_stream() sending request (no semaphore)")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=10.0)
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/api/chat",
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    token = chunk.get("message", {}).get("content", "")
+                    if token:
+                        yield token
+                    if chunk.get("done"):
+                        break
+
+
+# Module-level singleton
+_client: LLMClient | OpenAICompatibleClient | AnthropicClient | None = None
+
+
+def get_llm_client() -> LLMClient | OpenAICompatibleClient | AnthropicClient:
+    """Return module-level singleton LLM client based on LLM_PROVIDER config.
+
+    Always reads config.* dynamically — never uses module-level imports of
+    LLM_PROVIDER / LLM_API_KEY / etc., which are frozen snapshots from import
+    time and do NOT reflect runtime hot-switches via update_cloud_config().
+    """
+    global _client
+    if _client is None:
+        from src.infra import config as _cfg  # dynamic read every time
+        if _cfg.LLM_PROVIDER == "openai":
+            if not _cfg.LLM_API_KEY:
+                raise ValueError("LLM_API_KEY is required when LLM_PROVIDER=openai")
+            if not _cfg.LLM_BASE_URL:
+                raise ValueError("LLM_BASE_URL is required when LLM_PROVIDER=openai")
+            if _cfg.LLM_PROVIDER_FORMAT == "anthropic":
+                from src.infra.anthropic_client import AnthropicClient
+                _client = AnthropicClient(
+                    base_url=_cfg.LLM_BASE_URL,
+                    api_key=_cfg.LLM_API_KEY,
+                    model=_cfg.LLM_MODEL or "claude-sonnet-4-6",
+                )
+            else:
+                from src.infra.openai_client import OpenAICompatibleClient
+                _client = OpenAICompatibleClient(
+                    base_url=_cfg.LLM_BASE_URL,
+                    api_key=_cfg.LLM_API_KEY,
+                    model=_cfg.LLM_MODEL or "gpt-4o",
+                )
+        else:
+            _client = LLMClient(
+                base_url=_cfg.OLLAMA_BASE_URL,
+                model=_cfg.OLLAMA_MODEL,
+            )
+    return _client

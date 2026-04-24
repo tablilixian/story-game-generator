@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relationship",
+  "description": "角色关系数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "person_a": {
+      "type": "string",
+      "description": "角色A的名称"
+    },
+    "person_b": {
+      "type": "string",
+      "description": "角色B的名称"
+    },
+    "relation_type": {
+      "type": "string",
+      "description": "关系类型"
+    },
+    "is_new": {
+      "type": "boolean",
+      "description": "是否为新关系"
+    },
+    "previous_type": {
+      "type": "string",
+      "description": "之前的关系类型（如有变化）"
+    },
+    "evidence": {
+      "type": "string",
+      "description": "原文依据"
+    }
+  },
+  "required": ["person_a", "person_b", "relation_type"]
+}

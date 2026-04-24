@@ -1,0 +1,2103 @@
+"""Visualization data aggregation from ChapterFacts.
+
+Provides data for 4 views: graph, map, timeline, factions.
+All functions accept chapter_start/chapter_end to filter by range.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections import Counter, defaultdict
+from pathlib import Path
+
+from src.db.sqlite_db import get_connection
+from src.models.chapter_fact import ChapterFact
+from src.db import world_structure_store
+from src.infra.config import DATA_DIR
+from src.services.map_layout_service import (
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    SPATIAL_SCALE_CANVAS,
+    ConstraintSolver,
+    _layout_regions,
+    compute_chapter_hash,
+    compute_layered_layout,
+    generate_landmasses,
+    generate_rivers,
+    generate_roads,
+    generate_terrain,
+    generate_voronoi_boundaries,
+    layout_to_list,
+    place_unresolved_near_neighbors,
+)
+from src.services.alias_resolver import build_alias_map
+from src.services.geo_resolver import (
+    auto_resolve as geo_auto_resolve,
+    place_unresolved_geo_coords,
+)
+from src.extraction.fact_validator import _LOCATION_NAME_NORMALIZE
+from src.services.conflict_detector import (
+    _detect_location_conflicts,
+    _detect_direction_conflicts,
+    _detect_distance_conflicts,
+)
+from src.services.relation_utils import normalize_relation_type
+from src.services.world_structure_agent import WorldStructureAgent
+from src.models.world_structure import LayerType
+
+logger = logging.getLogger(__name__)
+
+
+async def _load_facts_in_range(
+    novel_id: str, chapter_start: int, chapter_end: int
+) -> list[ChapterFact]:
+    """Load ChapterFacts within the given chapter range."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            SELECT cf.fact_json, c.chapter_num
+            FROM chapter_facts cf
+            JOIN chapters c ON cf.chapter_id = c.id AND cf.novel_id = c.novel_id
+            WHERE cf.novel_id = ? AND c.chapter_num >= ? AND c.chapter_num <= ?
+            ORDER BY c.chapter_num
+            """,
+            (novel_id, chapter_start, chapter_end),
+        )
+        rows = await cursor.fetchall()
+        facts: list[ChapterFact] = []
+        for row in rows:
+            data = json.loads(row["fact_json"])
+            data["chapter_id"] = row["chapter_num"]
+            data["novel_id"] = novel_id
+            facts.append(ChapterFact.model_validate(data))
+        return facts
+    finally:
+        await conn.close()
+
+
+async def _get_earlier_location_names(
+    novel_id: str, first_chapter: int, before_chapter: int,
+) -> set[str]:
+    """Get location names from chapters before the given chapter number."""
+    if before_chapter <= first_chapter:
+        return set()
+    facts = await _load_facts_in_range(novel_id, first_chapter, before_chapter - 1)
+    names: set[str] = set()
+    for fact in facts:
+        for loc in fact.locations:
+            names.add(loc.name)
+    return names
+
+
+async def get_analyzed_range(novel_id: str) -> tuple[int, int]:
+    """Get the first and last analyzed chapter numbers."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            """
+            SELECT MIN(c.chapter_num) as first_ch, MAX(c.chapter_num) as last_ch
+            FROM chapter_facts cf
+            JOIN chapters c ON cf.chapter_id = c.id AND cf.novel_id = c.novel_id
+            WHERE cf.novel_id = ?
+            """,
+            (novel_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row["first_ch"] is not None:
+            return (row["first_ch"], row["last_ch"])
+        return (0, 0)
+    finally:
+        await conn.close()
+
+
+# ── Graph (Person Relationship Network) ──────────
+
+
+async def get_graph_data(
+    novel_id: str, chapter_start: int, chapter_end: int
+) -> dict:
+    from src.services.relation_utils import classify_relation_category
+    from src.services.name_authority import (
+        CANONICAL_BLOCKLIST,
+        GENERIC_PERSON_ALIASES,
+        is_surname_plus_shi,
+    )
+    from src.extraction.fact_validator import _is_generic_person
+
+    facts = await _load_facts_in_range(novel_id, chapter_start, chapter_end)
+    alias_map = await build_alias_map(novel_id)
+
+    # Build the set of "known canonical names" — names that appear as values
+    # in alias_map. Override-rescued primaries (e.g. 薛姨妈, 王夫人 in 红楼梦)
+    # are dict-registered characters.
+    known_canonicals = set(alias_map.values())
+
+    def _skip_person_name(name: str) -> bool:
+        """v0.71.1: narrow post-aggregation filter for generic names that
+        remain in chapter_facts persisted BEFORE the new safety rules were
+        added (e.g. 李氏 / 太太 / 老太太 / 贾母等 / 飞东洋...鹦哥).
+
+        Uses a NARROW blocklist to avoid false positives on override-rescued
+        primaries like 王夫人/薛姨妈 (which end with "夫人/姨妈" and hit the
+        structural spouse-pattern rule but are real characters).
+        """
+        if name in alias_map or name in known_canonicals:
+            return False  # known entity — trust alias_map
+        # Explicit blocklist (太太/老太太/奶奶/那呆子/取经人/老孙 ...)
+        if name in CANONICAL_BLOCKLIST:
+            return True
+        # Kinship/generic person terms (覆盖 李氏/王氏 会误伤真实)
+        # 只过滤那些明确的"X等"/集合引用
+        if name in GENERIC_PERSON_ALIASES:
+            return True
+        # 姓+氏 模式 (李氏/王氏/甄氏)
+        if is_surname_plus_shi(name):
+            return True
+        # "X等" 集合引用 (贾母等/宝玉等)
+        if len(name) >= 3 and name.endswith("等"):
+            return True
+        # 长描述性名称 (飞东洋游普世感恩行孝黄毛红嘴白鹦哥)
+        if len(name) >= 10:
+            return True
+        # v0.71.1: delegate to FactValidator 的集合名/群X/众X/_GENERIC_PERSON_WORDS 检测.
+        # 这条检查 name_authority 的 CANONICAL_BLOCKLIST 覆盖不到的旧数据
+        # (群猴/五百阿罗/土地神祗 等)。_is_generic_person 不检测结构 level-0
+        # 所以不会误伤被 override 救活的 王夫人/薛姨妈.
+        if _is_generic_person(name) is not None:
+            return True
+        return False
+
+    # Collect person nodes
+    person_chapters: dict[str, set[int]] = defaultdict(set)
+    person_org: dict[str, str] = {}
+    # Track all aliases seen per canonical name
+    person_aliases: dict[str, set[str]] = defaultdict(set)
+
+    # Collect edges (person_a, person_b) -> relation info
+    edge_map: dict[tuple[str, str], dict] = {}
+
+    # ── Org attribution: collect from org_events + org-type locations ──
+    _ORG_ACTION_JOIN = {"加入", "晋升", "出现", "创建", "成立"}
+    org_locations: set[str] = set()  # location names that are org-like
+    person_org_visits: dict[str, Counter] = defaultdict(Counter)  # person → org → visit count
+
+    for fact in facts:
+        ch = fact.chapter_id
+
+        for char in fact.characters:
+            if _skip_person_name(char.name):
+                continue
+            canonical = alias_map.get(char.name, char.name)
+            person_chapters[canonical].add(ch)
+            if char.name != canonical:
+                person_aliases[canonical].add(char.name)
+
+        # Track org membership from org_events
+        for oe in fact.org_events:
+            if oe.member and oe.action in _ORG_ACTION_JOIN:
+                member = alias_map.get(oe.member, oe.member)
+                org = alias_map.get(oe.org_name, oe.org_name)
+                person_org[member] = org
+
+        # Identify org-type locations
+        for loc in fact.locations:
+            loc_canonical = alias_map.get(loc.name, loc.name)
+            if _is_org_type(loc.type):
+                org_locations.add(loc_canonical)
+
+        # Track character visits to org-type locations
+        for char in fact.characters:
+            if _skip_person_name(char.name):
+                continue
+            canonical = alias_map.get(char.name, char.name)
+            for loc_name in char.locations_in_chapter:
+                loc_canonical = alias_map.get(loc_name, loc_name)
+                if loc_canonical in org_locations:
+                    person_org_visits[canonical][loc_canonical] += 1
+
+        for rel in fact.relationships:
+            if _skip_person_name(rel.person_a) or _skip_person_name(rel.person_b):
+                continue
+            a = alias_map.get(rel.person_a, rel.person_a)
+            b = alias_map.get(rel.person_b, rel.person_b)
+            if a == b:
+                continue  # skip self-relations caused by alias
+            key = tuple(sorted([a, b]))
+            if key not in edge_map:
+                edge_map[key] = {
+                    "source": key[0],
+                    "target": key[1],
+                    "type_counts": Counter(),
+                    "chapters": set(),
+                }
+            edge_map[key]["chapters"].add(ch)
+            normalized = normalize_relation_type(rel.relation_type)
+            edge_map[key]["type_counts"][normalized] += 1
+
+    # ── Fallback org attribution from location visits ──
+    for person, org_counts in person_org_visits.items():
+        if person not in person_org and org_counts:
+            # Assign to the org-location visited most frequently
+            best_org = org_counts.most_common(1)[0][0]
+            if org_counts[best_org] >= 2:  # require ≥ 2 visits
+                person_org[person] = best_org
+
+    nodes = [
+        {
+            "id": name,
+            "name": name,
+            "type": "person",
+            "chapter_count": len(chs),
+            "org": person_org.get(name, ""),
+            "aliases": sorted(person_aliases.get(name, set())),
+        }
+        for name, chs in person_chapters.items()
+    ]
+    nodes.sort(key=lambda n: -n["chapter_count"])
+
+    edges_out: list[dict] = []
+    category_counts: Counter = Counter()
+    for e in edge_map.values():
+        primary_type = e["type_counts"].most_common(1)[0][0]
+        category = classify_relation_category(primary_type)
+        category_counts[category] += 1
+        edges_out.append({
+            "source": e["source"],
+            "target": e["target"],
+            "relation_type": primary_type,
+            "all_types": [t for t, _ in e["type_counts"].most_common()],
+            "weight": len(e["chapters"]),
+            "chapters": sorted(e["chapters"]),
+            "category": category,
+        })
+
+    # Compute a suggested min_edge_weight for large graphs
+    max_weight = max((e["weight"] for e in edges_out), default=1)
+    suggested_min_edge = 1
+    if len(edges_out) > 500:
+        suggested_min_edge = 2
+    if len(edges_out) > 2000:
+        suggested_min_edge = max(3, max_weight // 10)
+
+    # Relation type stats for frontend display
+    type_counts: Counter = Counter()
+    for e in edges_out:
+        type_counts[e["relation_type"]] += 1
+
+    return {
+        "nodes": nodes,
+        "edges": edges_out,
+        "max_edge_weight": max_weight,
+        "suggested_min_edge_weight": suggested_min_edge,
+        "category_counts": dict(category_counts),
+        "type_counts": dict(type_counts.most_common(20)),
+    }
+
+
+# ── Map (Location Hierarchy + Trajectories) ──────
+
+
+# Keywords for ocean/sea type locations (should stay in sea)
+_OCEAN_ICON_TYPES = {"ocean", "water", "island"}
+_OCEAN_TYPE_KEYWORDS_VIS = ("海", "洋", "湖泊", "河流", "海域", "水域", "大海", "海洋")
+# Broader water type keywords for parent-chain water detection
+_WATER_TYPE_KEYWORDS = ("海", "洋", "湖", "江", "河", "溪", "泉", "潭", "池", "水域", "海域")
+
+
+def _is_water_location(
+    name: str,
+    loc_lookup: dict[str, dict],
+    _cache: dict[str, bool] | None = None,
+    _depth: int = 0,
+) -> bool:
+    """Triple water detection: icon + type keywords + parent chain (max 5 levels).
+
+    Returns True if this location should stay in sea (is a water body).
+    """
+    if _cache is not None and name in _cache:
+        return _cache[name]
+
+    loc = loc_lookup.get(name)
+    if not loc:
+        return False
+
+    # Layer 1: icon-based detection
+    icon = loc.get("icon", "generic")
+    if icon in _OCEAN_ICON_TYPES:
+        if _cache is not None:
+            _cache[name] = True
+        return True
+
+    # Layer 2: type keyword detection
+    loc_type = loc.get("type", "")
+    if any(kw in loc_type for kw in _OCEAN_TYPE_KEYWORDS_VIS):
+        if _cache is not None:
+            _cache[name] = True
+        return True
+
+    # Layer 3: parent chain — if any ancestor is a water body, this is too
+    if _depth < 5:
+        parent = loc.get("parent", "")
+        if parent and parent != name:
+            if _is_water_location(parent, loc_lookup, _cache, _depth + 1):
+                if _cache is not None:
+                    _cache[name] = True
+                return True
+
+    if _cache is not None:
+        _cache[name] = False
+    return False
+
+
+def _snap_sea_orphans_to_land(
+    layout_data: list[dict],
+    locations: list[dict],
+    landmass_result: dict,
+    spatial_constraints: list[dict],
+) -> int:
+    """Snap non-ocean locations that fell into the sea toward nearby land locations.
+
+    Triple water detection (icon + type + parent chain). Recursive snap ensures
+    children of snapped parents also move to land. Returns total snap count.
+    """
+    import math
+    import numpy as np
+    from scipy.spatial import KDTree
+
+    land_mask = landmass_result.get("_land_mask")
+    cell_size = landmass_result.get("_cell_size", 8.0)
+    if land_mask is None:
+        return 0
+
+    grid_h, grid_w = land_mask.shape
+
+    # Build location lookup for triple water detection
+    loc_lookup: dict[str, dict] = {loc["name"]: loc for loc in locations}
+    water_cache: dict[str, bool] = {}
+
+    # Build ocean name set using triple detection
+    ocean_names: set[str] = set()
+    for loc in locations:
+        if _is_water_location(loc["name"], loc_lookup, water_cache):
+            ocean_names.add(loc["name"])
+
+    def _is_on_land(x: float, y: float) -> bool:
+        gxi = int(round(x / cell_size))
+        gyi = int(round(y / cell_size))
+        if 0 <= gyi < grid_h and 0 <= gxi < grid_w:
+            return bool(land_mask[gyi, gxi])
+        return False
+
+    loc_parent = {loc["name"]: loc.get("parent") for loc in locations}
+    layout_map = {item["name"]: item for item in layout_data if not item.get("is_portal")}
+
+    golden_angle = math.pi * (3 - math.sqrt(5))
+    anchor_counter: dict[str, int] = {}
+
+    def _snap_one(item: dict, anchor: dict) -> None:
+        """Snap a single item near an anchor using sunflower distribution."""
+        anchor_name = anchor["name"]
+        count = anchor_counter.get(anchor_name, 0)
+        anchor_counter[anchor_name] = count + 1
+
+        angle = golden_angle * count
+        base_r = 40 + 10 * (count // 8)
+        new_x = anchor["x"] + base_r * math.cos(angle)
+        new_y = anchor["y"] + base_r * math.sin(angle)
+
+        if not _is_on_land(new_x, new_y):
+            new_x = anchor["x"] * 0.8 + new_x * 0.2
+            new_y = anchor["y"] * 0.8 + new_y * 0.2
+
+        item["x"] = round(new_x, 1)
+        item["y"] = round(new_y, 1)
+
+    # ── Recursive snap loop (max 3 rounds) ──
+    total_snapped = 0
+    rounds_done = 0
+    for round_num in range(3):
+        # Re-classify on each round (newly snapped parents become land anchors)
+        land_items: list[dict] = []
+        sea_orphans: list[dict] = []
+
+        for item in layout_data:
+            name = item.get("name", "")
+            if item.get("is_portal") or not name:
+                continue
+            if name in ocean_names:
+                continue
+            if _is_on_land(item["x"], item["y"]):
+                land_items.append(item)
+            else:
+                sea_orphans.append(item)
+
+        if not sea_orphans or not land_items:
+            break
+
+        land_coords = np.array([(it["x"], it["y"]) for it in land_items], dtype=np.float64)
+        land_tree = KDTree(land_coords)
+
+        round_snapped = 0
+        for item in sea_orphans:
+            name = item["name"]
+            # Priority 1: snap to parent if parent is on land
+            parent = loc_parent.get(name)
+            anchor = None
+            if parent and parent in layout_map:
+                p_item = layout_map[parent]
+                if _is_on_land(p_item["x"], p_item["y"]):
+                    anchor = p_item
+
+            # Priority 2: nearest land location
+            if anchor is None:
+                _, idx = land_tree.query([item["x"], item["y"]])
+                anchor = land_items[idx]
+
+            _snap_one(item, anchor)
+            round_snapped += 1
+
+        total_snapped += round_snapped
+        rounds_done = round_num + 1
+        if round_snapped == 0:
+            break
+
+        logger.debug("Sea snap round %d: snapped %d locations", round_num + 1, round_snapped)
+
+    if total_snapped:
+        logger.info("Total sea-orphan snap: %d locations (%d rounds)", total_snapped, rounds_done)
+
+    return total_snapped
+
+
+_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+# Valid direction enum values expected by the constraint solver
+_VALID_DIRECTION_VALUES = {
+    "north_of", "south_of", "east_of", "west_of",
+    "northeast_of", "northwest_of", "southeast_of", "southwest_of",
+}
+
+# Chinese direction → English enum
+_CHINESE_DIRECTION_MAP = {
+    "北": "north_of", "北方": "north_of", "北边": "north_of", "以北": "north_of",
+    "北面": "north_of", "北侧": "north_of", "北向": "north_of", "在北": "north_of",
+    "南": "south_of", "南方": "south_of", "南边": "south_of", "以南": "south_of",
+    "南面": "south_of", "南侧": "south_of", "南向": "south_of", "在南": "south_of",
+    "东": "east_of", "东方": "east_of", "东边": "east_of", "以东": "east_of",
+    "东面": "east_of", "东侧": "east_of", "东向": "east_of", "在东": "east_of",
+    "西": "west_of", "西方": "west_of", "西边": "west_of", "以西": "west_of",
+    "西面": "west_of", "西侧": "west_of", "西向": "west_of", "在西": "west_of",
+    "东北": "northeast_of", "西北": "northwest_of",
+    "东南": "southeast_of", "西南": "southwest_of",
+    "东北方": "northeast_of", "西北方": "northwest_of",
+    "东南方": "southeast_of", "西南方": "southwest_of",
+}
+
+
+def _clean_spatial_constraints(
+    constraints: list[dict],
+    locations: list[dict],
+) -> list[dict]:
+    """Post-process spatial constraints to fix common LLM extraction errors.
+
+    1. Fix inverted contains relationships using hierarchy levels.
+    2. Normalize Chinese direction values to English enum.
+    3. Remove constraints with invalid/unparseable values.
+    """
+    # Build lookup tables
+    loc_level = {loc["name"]: loc.get("level", 0) for loc in locations}
+    loc_parent = {loc["name"]: loc.get("parent") for loc in locations}
+    loc_names_set = {loc["name"] for loc in locations}
+
+    cleaned = []
+    fixed = 0
+    removed = 0
+    dangling = 0
+
+    for c in constraints:
+        # ── Filter dangling references: source/target must exist in locations ──
+        if c["source"] not in loc_names_set or c["target"] not in loc_names_set:
+            dangling += 1
+            continue
+
+        rtype = c["relation_type"]
+
+        # ── Fix contains inversions ──
+        if rtype == "contains":
+            src, tgt = c["source"], c["target"]
+            src_level = loc_level.get(src, 0)
+            tgt_level = loc_level.get(tgt, 0)
+
+            # Check if source is actually a child of target (inverted)
+            if loc_parent.get(src) == tgt:
+                # Swap: target should contain source
+                c = {**c, "source": tgt, "target": src}
+                fixed += 1
+            elif loc_parent.get(tgt) == src:
+                pass  # Correct: source contains target
+            elif src_level > tgt_level:
+                # Higher level = deeper in hierarchy = smaller area → likely inverted
+                c = {**c, "source": tgt, "target": src}
+                fixed += 1
+
+            cleaned.append(c)
+            continue
+
+        # ── Normalize direction values ──
+        if rtype == "direction":
+            value = c["value"]
+            if value in _VALID_DIRECTION_VALUES:
+                cleaned.append(c)
+                continue
+            # Try Chinese mapping
+            for zh, en in _CHINESE_DIRECTION_MAP.items():
+                if zh in value:
+                    c = {**c, "value": en}
+                    fixed += 1
+                    cleaned.append(c)
+                    break
+            else:
+                # Unparseable direction value — drop
+                removed += 1
+            continue
+
+        # Other relation types: keep as-is
+        cleaned.append(c)
+
+    if fixed or removed or dangling:
+        logger.info(
+            "Constraint cleaning: fixed %d, removed %d, dangling %d, kept %d",
+            fixed, removed, dangling, len(cleaned),
+        )
+    return cleaned
+
+
+# ── Direction opposites for contradiction detection ──
+_DIRECTION_OPPOSITES: dict[str, str] = {
+    "north_of": "south_of", "south_of": "north_of",
+    "east_of": "west_of", "west_of": "east_of",
+    "northeast_of": "southwest_of", "southwest_of": "northeast_of",
+    "northwest_of": "southeast_of", "southeast_of": "northwest_of",
+}
+
+# 4 cardinal directions used for transitive inference (diagonal excluded)
+_CARDINAL_DIRECTIONS = {"north_of", "south_of", "east_of", "west_of"}
+
+# Tier rank for tier-gap filtering
+_TIER_RANK: dict[str, int] = {
+    "world": 0, "continent": 1, "kingdom": 2, "region": 3,
+    "city": 4, "site": 5, "building": 6,
+}
+
+
+def _enhance_constraints(
+    spatial_constraints: list[dict],
+    trajectories: dict[str, list[dict]],
+    locations: list[dict],
+    completed_relations: list[dict] | None = None,
+) -> list[dict]:
+    """Enhance spatial constraints with trajectory-implied adjacency and transitive direction inference.
+
+    Phase A (no LLM, < 1 second):
+    1. Trajectory travel_sequence: consecutive chapter character movement → adjacent constraint
+    2. Transitive direction inference: A north B, B north C → A north C (chain ≤ 2)
+    3. Inject completed_spatial_relations from WorldStructure (Phase B results)
+
+    Priority: existing (chapter-extracted) > completed (Phase B) > inferred (Phase A)
+    """
+    existing_keys: set[tuple[str, str, str]] = {
+        (c["source"], c["target"], c["relation_type"]) for c in spatial_constraints
+    }
+    # Also track (source, target) pairs for any relation type
+    existing_pairs: set[tuple[str, str]] = {
+        (c["source"], c["target"]) for c in spatial_constraints
+    }
+    existing_pairs |= {(c["target"], c["source"]) for c in spatial_constraints}
+
+    loc_tier: dict[str, str] = {loc["name"]: loc.get("tier", "city") for loc in locations}
+    loc_parent: dict[str, str | None] = {loc["name"]: loc.get("parent") for loc in locations}
+    loc_set: set[str] = {loc["name"] for loc in locations}
+
+    added_travel = 0
+    added_transitive = 0
+    added_completed = 0
+
+    # ── 1. Inject completed_spatial_relations (Phase B, higher priority than Phase A inferred) ──
+    if completed_relations:
+        for rel in completed_relations:
+            key = (rel["source"], rel["target"], rel["relation_type"])
+            if key not in existing_keys:
+                spatial_constraints.append(rel)
+                existing_keys.add(key)
+                existing_pairs.add((rel["source"], rel["target"]))
+                existing_pairs.add((rel["target"], rel["source"]))
+                added_completed += 1
+
+    # ── 2. Trajectory travel_sequence constraints ──
+    def _has_common_ancestor(a: str, b: str, depth: int = 3) -> bool:
+        """Check if a and b share a common ancestor within `depth` levels."""
+        ancestors_a: set[str] = set()
+        cur = a
+        for _ in range(depth):
+            p = loc_parent.get(cur)
+            if not p:
+                break
+            ancestors_a.add(p)
+            cur = p
+        cur = b
+        for _ in range(depth):
+            p = loc_parent.get(cur)
+            if not p:
+                break
+            if p in ancestors_a:
+                return True
+            cur = p
+        # Both rootless → trivially share "no parent" ancestor
+        if not loc_parent.get(a) and not loc_parent.get(b):
+            return True
+        return False
+
+    for _person, path in trajectories.items():
+        if len(path) < 2:
+            continue
+        for i in range(len(path) - 1):
+            loc_a = path[i]["location"]
+            loc_b = path[i + 1]["location"]
+            if loc_a == loc_b:
+                continue
+            if loc_a not in loc_set or loc_b not in loc_set:
+                continue
+            # Non-consecutive chapters → skip (teleport, not travel)
+            ch_gap = abs(path[i + 1]["chapter"] - path[i]["chapter"])
+            if ch_gap > 1:
+                continue
+            # Tier gap check: only same tier or adjacent tiers
+            tier_a = _TIER_RANK.get(loc_tier.get(loc_a, "city"), 4)
+            tier_b = _TIER_RANK.get(loc_tier.get(loc_b, "city"), 4)
+            if abs(tier_a - tier_b) > 1:
+                continue
+            # Common ancestor check
+            if not _has_common_ancestor(loc_a, loc_b):
+                continue
+            # Don't overwrite existing constraints
+            key = (loc_a, loc_b, "travel_sequence")
+            rev_key = (loc_b, loc_a, "travel_sequence")
+            if key in existing_keys or rev_key in existing_keys:
+                continue
+            spatial_constraints.append({
+                "source": loc_a,
+                "target": loc_b,
+                "relation_type": "travel_sequence",
+                "value": "travel_implied",
+                "confidence": "medium",
+                "confidence_score": 0.6,
+                "source_type": "trajectory",
+            })
+            existing_keys.add(key)
+            existing_pairs.add((loc_a, loc_b))
+            existing_pairs.add((loc_b, loc_a))
+            added_travel += 1
+
+    # ── 3. Transitive direction inference (chain ≤ 2, cardinal only) ──
+    # Build directed graph: (source, direction) → [targets]
+    dir_graph: dict[str, dict[str, list[str]]] = {}  # source → {direction → [targets]}
+    dir_confidence: dict[tuple[str, str, str], str] = {}  # (src, tgt, dir) → confidence
+
+    for c in spatial_constraints:
+        if c["relation_type"] == "direction" and c.get("value") in _CARDINAL_DIRECTIONS:
+            src, tgt, direction = c["source"], c["target"], c["value"]
+            dir_graph.setdefault(src, {}).setdefault(direction, []).append(tgt)
+            dir_confidence[(src, tgt, direction)] = c.get("confidence", "medium")
+
+    # One-hop transitive: A →dir→ B →dir→ C ⇒ A →dir→ C
+    for a, dir_targets in dir_graph.items():
+        for direction, b_list in dir_targets.items():
+            for b in b_list:
+                b_targets = dir_graph.get(b, {}).get(direction, [])
+                for c in b_targets:
+                    if c == a:
+                        continue
+                    key = (a, c, "direction")
+                    if key in existing_keys:
+                        continue
+                    # Check for contradiction: if C→A exists in opposite direction, skip
+                    opposite = _DIRECTION_OPPOSITES.get(direction)
+                    rev_key = (c, a, "direction")
+                    is_contradiction = False
+                    if rev_key in existing_keys:
+                        for ec in spatial_constraints:
+                            if ec["source"] == c and ec["target"] == a and ec["relation_type"] == "direction":
+                                if ec.get("value") == opposite:
+                                    is_contradiction = True
+                                    break
+                    if is_contradiction:
+                        continue
+                    # Confidence decay: high→medium, medium→low, low→skip
+                    src_conf_ab = dir_confidence.get((a, b, direction), "medium")
+                    src_conf_bc = dir_confidence.get((b, c, direction), "medium")
+                    min_conf = min(
+                        _CONFIDENCE_RANK.get(src_conf_ab, 1),
+                        _CONFIDENCE_RANK.get(src_conf_bc, 1),
+                    )
+                    if min_conf <= 1:
+                        continue  # source too weak to infer
+                    new_conf = "medium" if min_conf >= 3 else "low"
+
+                    spatial_constraints.append({
+                        "source": a,
+                        "target": c,
+                        "relation_type": "direction",
+                        "value": direction,
+                        "confidence": new_conf,
+                        "confidence_score": 0.6 if new_conf == "medium" else 0.3,
+                        "source_type": "transitive",
+                    })
+                    existing_keys.add(key)
+                    added_transitive += 1
+
+    if added_travel or added_transitive or added_completed:
+        logger.info(
+            "Constraint enhancement: +%d travel_sequence, +%d transitive, +%d completed",
+            added_travel, added_transitive, added_completed,
+        )
+    return spatial_constraints
+
+
+_map_cache: dict[str, tuple[float, dict]] = {}  # key → (timestamp, data)
+_MAP_CACHE_TTL = 300  # 5 minutes
+
+async def get_map_data(
+    novel_id: str, chapter_start: int, chapter_end: int,
+    layer_id: str | None = None,
+) -> dict:
+    import time as _time
+    cache_key = f"{novel_id}:{chapter_start}:{chapter_end}:{layer_id or ''}"
+    if cache_key in _map_cache:
+        ts, cached = _map_cache[cache_key]
+        if _time.time() - ts < _MAP_CACHE_TTL:
+            return cached
+
+    facts = await _load_facts_in_range(novel_id, chapter_start, chapter_end)
+
+    loc_info: dict[str, dict] = {}
+    loc_chapters: dict[str, set[int]] = defaultdict(set)
+    trajectories: dict[str, list[dict]] = defaultdict(list)
+    # Spatial constraint aggregation: (source, target, relation_type) -> best entry
+    constraint_map: dict[tuple[str, str, str], dict] = {}
+
+    # Track the "best" role per location: setting > boundary > referenced > None
+    _ROLE_PRIORITY = {"setting": 3, "boundary": 2, "referenced": 1}
+    loc_role: dict[str, str | None] = {}
+
+    for fact in facts:
+        ch = fact.chapter_id
+
+        for loc in fact.locations:
+            loc_chapters[loc.name].add(ch)
+            if loc.name not in loc_info:
+                loc_info[loc.name] = {
+                    "name": loc.name,
+                    "type": loc.type,
+                    "parent": loc.parent,
+                }
+            elif loc.parent and not loc_info[loc.name]["parent"]:
+                loc_info[loc.name]["parent"] = loc.parent
+            # Upgrade role to most significant seen
+            new_role = loc.role
+            if new_role:
+                cur = loc_role.get(loc.name)
+                if cur is None or _ROLE_PRIORITY.get(new_role, 0) > _ROLE_PRIORITY.get(cur, 0):
+                    loc_role[loc.name] = new_role
+
+        # Build trajectories from characters' locations_in_chapter
+        for char in fact.characters:
+            for loc_name in char.locations_in_chapter:
+                trajectories[char.name].append({
+                    "location": loc_name,
+                    "chapter": ch,
+                })
+
+        # Aggregate spatial relationships
+        for sr in fact.spatial_relationships:
+            key = (sr.source, sr.target, sr.relation_type)
+            new_rank = _CONFIDENCE_RANK.get(sr.confidence, 1)
+            existing = constraint_map.get(key)
+            if existing is None or new_rank > _CONFIDENCE_RANK.get(existing["confidence"], 1):
+                constraint_map[key] = {
+                    "source": sr.source,
+                    "target": sr.target,
+                    "relation_type": sr.relation_type,
+                    "value": sr.value,
+                    "confidence": sr.confidence,
+                    "narrative_evidence": sr.narrative_evidence,
+                    "distance_class": sr.distance_class,
+                    "confidence_score": sr.confidence_score,
+                    "waypoints": sr.waypoints,
+                }
+
+    # Calculate hierarchy levels
+    def get_level(name: str, visited: set[str] | None = None) -> int:
+        if visited is None:
+            visited = set()
+        if name in visited:
+            return 0
+        visited.add(name)
+        info = loc_info.get(name)
+        if not info or not info["parent"]:
+            return 0
+        return 1 + get_level(info["parent"], visited)
+
+    # Pre-load tier/icon maps from WorldStructure (loaded later, but we need a ref)
+    # We'll populate these after ws is loaded; for now default to empty
+    _tier_map: dict[str, str] = {}
+    _icon_map: dict[str, str] = {}
+
+    locations = [
+        {
+            "id": name,
+            "name": name,
+            "type": info["type"],
+            "parent": info["parent"],
+            "level": get_level(name),
+            "mention_count": len(loc_chapters.get(name, set())),
+            "tier": "city",     # placeholder, updated after ws load
+            "icon": "generic",  # placeholder, updated after ws load
+            "role": loc_role.get(name),
+        }
+        for name, info in loc_info.items()
+    ]
+    locations.sort(key=lambda l: (-l["mention_count"], l["name"]))
+
+    # Deduplicate trajectories
+    for person in list(trajectories.keys()):
+        seen = set()
+        unique = []
+        for entry in trajectories[person]:
+            key = (entry["location"], entry["chapter"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(entry)
+        trajectories[person] = unique
+
+    # Inject travel_path waypoints into trajectories.
+    # If character moves A→C and a travel_path exists A→C with waypoints=[B],
+    # insert B between A and C so the animation shows the full route.
+    travel_paths: dict[tuple[str, str], list[str]] = {}
+    for c in constraint_map.values():
+        if c["relation_type"] == "travel_path" and c.get("waypoints"):
+            travel_paths[(c["source"], c["target"])] = c["waypoints"]
+            # Also store reverse direction with reversed waypoints
+            travel_paths[(c["target"], c["source"])] = list(reversed(c["waypoints"]))
+
+    if travel_paths:
+        for person in list(trajectories.keys()):
+            entries = trajectories[person]
+            if len(entries) < 2:
+                continue
+            enriched: list[dict] = [entries[0]]
+            for i in range(1, len(entries)):
+                prev_loc = entries[i - 1]["location"]
+                curr_loc = entries[i]["location"]
+                wps = travel_paths.get((prev_loc, curr_loc))
+                if wps:
+                    # Interpolate chapter numbers for waypoints
+                    ch_prev = entries[i - 1]["chapter"]
+                    ch_curr = entries[i]["chapter"]
+                    for wi, wp in enumerate(wps):
+                        # Only insert if waypoint is a known location
+                        if wp in loc_info:
+                            frac = (wi + 1) / (len(wps) + 1)
+                            wp_ch = int(ch_prev + frac * (ch_curr - ch_prev))
+                            enriched.append({"location": wp, "chapter": wp_ch, "waypoint": True})
+                enriched.append(entries[i])
+            trajectories[person] = enriched
+
+    # Limit trajectories: only keep characters with meaningful movement (≥2 unique locations)
+    # This prevents sending thousands of single-location entries that bloat the response
+    trajectories = {
+        person: entries
+        for person, entries in trajectories.items()
+        if len({e["location"] for e in entries}) >= 2
+    }
+
+    spatial_constraints = list(constraint_map.values())
+
+    # Clean up common LLM extraction errors
+    spatial_constraints = _clean_spatial_constraints(spatial_constraints, locations)
+
+    # Build first-chapter-appearance map for narrative axis
+    first_chapter_map: dict[str, int] = {}
+    for name, chs in loc_chapters.items():
+        if chs:
+            first_chapter_map[name] = min(chs)
+
+    # ── Load WorldStructure ──
+    region_boundaries: list[dict] = []
+    location_region_bounds: dict[str, tuple[float, float, float, float]] = {}
+    layer_layouts: dict[str, list[dict]] = {}
+    ws = None
+    ws_summary: dict | None = None
+    portals_response: list[dict] = []
+
+    try:
+        ws = await world_structure_store.load(novel_id)
+        if ws is not None:
+            # Normalize variant location names in WorldStructure maps so they
+            # match the canonical forms used in region definitions (e.g.,
+            # 南瞻部洲 → 南赡部洲 matches the overworld region).
+            if _LOCATION_NAME_NORMALIZE:
+                for variant, canonical in _LOCATION_NAME_NORMALIZE.items():
+                    # Fix location_region_map: variant key → remap to canonical region
+                    if variant in ws.location_region_map:
+                        # If canonical region exists, point variant there
+                        overworld_region_names = set()
+                        for layer in ws.layers:
+                            if layer.layer_id == "overworld":
+                                overworld_region_names = {r.name for r in layer.regions}
+                                break
+                        if canonical in overworld_region_names:
+                            ws.location_region_map[variant] = canonical
+
+            # Update location tier/icon from WorldStructure (with heuristic fallback)
+            _tier_map = ws.location_tiers if ws else {}
+            _icon_map = ws.location_icons if ws else {}
+            # _classify_tier is an instance method — create a temporary agent to
+            # use it for locations not already in the tier map.
+            _agent: WorldStructureAgent | None = None
+            for loc in locations:
+                name = loc["name"]
+                loc_type = loc.get("type", "")
+                parent = loc.get("parent")
+                level = loc.get("level", 0)
+                tier = _tier_map.get(name, "")
+                if not tier:
+                    if _agent is None:
+                        _agent = WorldStructureAgent.__new__(WorldStructureAgent)
+                        _agent.structure = ws
+                    tier = _agent._classify_tier(name, loc_type, parent, level)
+                loc["tier"] = tier
+                icon = _icon_map.get(name, "")
+                if not icon or icon == "generic":
+                    icon = WorldStructureAgent._classify_icon(name, loc_type)
+                loc["icon"] = icon
+
+            # Override parents with authoritative voted parents
+            if ws.location_parents:
+                for loc in locations:
+                    authoritative = ws.location_parents.get(loc["name"])
+                    if authoritative:
+                        loc["parent"] = authoritative
+
+            # Override parents with user-locked parents (highest priority)
+            try:
+                locked_parents = await _load_locked_parents(novel_id)
+                if locked_parents:
+                    for loc in locations:
+                        locked_p = locked_parents.get(loc["name"])
+                        if locked_p is not None:
+                            loc["parent"] = locked_p
+                            loc["locked"] = True
+            except Exception:
+                logger.warning("Failed to load locked parents", exc_info=True)
+
+            # Recalculate hierarchy levels with updated parents
+            if ws.location_parents:
+                # Rebuild loc_info parents first
+                for loc in locations:
+                    if loc["name"] in loc_info:
+                        loc_info[loc["name"]]["parent"] = loc["parent"]
+                for loc in locations:
+                    loc["level"] = get_level(loc["name"])
+
+            # Build world_structure summary for API response
+            ws_summary = _build_ws_summary(ws)
+
+            # Build portals response
+            for p in ws.portals:
+                target_layer_name = ""
+                for layer in ws.layers:
+                    if layer.layer_id == p.target_layer:
+                        target_layer_name = layer.name
+                        break
+                portals_response.append({
+                    "name": p.name,
+                    "source_layer": p.source_layer,
+                    "source_location": p.source_location,
+                    "target_layer": p.target_layer,
+                    "target_layer_name": target_layer_name,
+                    "target_location": p.target_location,
+                    "is_bidirectional": p.is_bidirectional,
+                })
+
+            # Auto-generate portal entries for merged layers (≤1 location)
+            _existing_portal_targets = {p["target_layer"] for p in portals_response}
+            for layer_info in ws_summary["layers"]:
+                if not layer_info.get("merged"):
+                    continue
+                if layer_info["layer_id"] in _existing_portal_targets:
+                    continue  # already has a portal
+                if layer_info["location_count"] < 1:
+                    continue
+                # Find the single location in this layer
+                loc_name = next(
+                    (name for name, lid in ws.location_layer_map.items()
+                     if lid == layer_info["layer_id"]),
+                    None,
+                )
+                if loc_name:
+                    portals_response.append({
+                        "name": f"进入{layer_info['name']}",
+                        "source_layer": "overworld",
+                        "source_location": loc_name,
+                        "target_layer": layer_info["layer_id"],
+                        "target_layer_name": layer_info["name"],
+                        "target_location": loc_name,
+                        "is_bidirectional": True,
+                    })
+
+            # Get regions from the active layer (default: overworld)
+            target_layer_id = layer_id or "overworld"
+            active_regions = []
+            for layer_obj in ws.layers:
+                if layer_obj.layer_id == target_layer_id and layer_obj.regions:
+                    active_regions = [
+                        {
+                            "name": r.name,
+                            "cardinal_direction": r.cardinal_direction,
+                            "region_type": r.region_type,
+                        }
+                        for r in layer_obj.regions
+                    ]
+                    break
+
+            if active_regions:
+                # Cap regions for display: if too many, keep top N by location count
+                MAX_DISPLAY_REGIONS = 30
+                if len(active_regions) > MAX_DISPLAY_REGIONS:
+                    # Count locations per region
+                    region_loc_counts: dict[str, int] = {}
+                    for loc_name_r, region_name_r in ws.location_region_map.items():
+                        region_loc_counts[region_name_r] = region_loc_counts.get(region_name_r, 0) + 1
+                    active_regions.sort(
+                        key=lambda r: region_loc_counts.get(r["name"], 0), reverse=True,
+                    )
+                    logger.info(
+                        "Capping display regions from %d to %d",
+                        len(active_regions), MAX_DISPLAY_REGIONS,
+                    )
+                    active_regions = active_regions[:MAX_DISPLAY_REGIONS]
+
+                # Dynamic canvas size for region layout
+                _ws_cw, _ws_ch = SPATIAL_SCALE_CANVAS.get(
+                    ws.spatial_scale or "", (CANVAS_WIDTH, CANVAS_HEIGHT)
+                )
+                region_layout = _layout_regions(active_regions, canvas_width=_ws_cw, canvas_height=_ws_ch)
+
+                # Generate Voronoi polygon boundaries
+                voronoi_result = generate_voronoi_boundaries(region_layout, canvas_width=_ws_cw, canvas_height=_ws_ch)
+
+                # Build region_boundaries for API response (polygon + center)
+                for rname, rdata in voronoi_result.items():
+                    region_boundaries.append({
+                        "region_name": rname,
+                        "color": rdata["color"],
+                        "polygon": [list(p) for p in rdata["polygon"]],
+                        "center": list(rdata["center"]),
+                    })
+
+                # Map locations to their region bounds (still use rectangular bounds for solver)
+                for loc_name, region_name in ws.location_region_map.items():
+                    if region_name in region_layout:
+                        location_region_bounds[loc_name] = region_layout[region_name]["bounds"]
+    except Exception:
+        logger.warning("Failed to load WorldStructure for region layout", exc_info=True)
+
+    # ── Phase A: Constraint enhancement (no LLM, real-time) ──
+    _completed_rels = ws.completed_spatial_relations if ws else None
+    spatial_constraints = _enhance_constraints(
+        spatial_constraints, dict(trajectories), locations,
+        completed_relations=_completed_rels,
+    )
+
+    # ── Layout computation with caching ──
+    _ws_scale_for_hash = ws.spatial_scale if ws else None
+    _cw_hash, _ch_hash = SPATIAL_SCALE_CANVAS.get(
+        _ws_scale_for_hash or "", (CANVAS_WIDTH, CANVAS_HEIGHT)
+    )
+    ch_hash = compute_chapter_hash(chapter_start, chapter_end, _cw_hash, _ch_hash)
+    target_layer = layer_id or "overworld"
+
+    # Raw geo coordinates for Leaflet frontend (populated by geographic branch)
+    geo_coords_raw: dict[str, dict[str, float]] | None = None
+
+    # Try layer-level cache first
+    cached_layer = await _load_cached_layer_layout(novel_id, target_layer, ch_hash)
+    # Invalidate stale cache: if world_structure says geographic but cache says otherwise.
+    # Also handle historical/wuxia genre override: geo_type may be cached as "fantasy"
+    # but the genre override will upgrade it to "mixed".
+    _effective_geo_type = ws.geo_type if ws else None
+    if (
+        _effective_geo_type
+        and _effective_geo_type not in ("realistic", "mixed")
+        and ws
+        and ws.novel_genre_hint
+        and ws.novel_genre_hint.lower() in ("historical", "wuxia")
+    ):
+        _effective_geo_type = "mixed"
+    if (
+        cached_layer is not None
+        and target_layer == "overworld"
+        and ws and _effective_geo_type in ("realistic", "mixed")
+        and cached_layer["layout_mode"] != "geographic"
+    ):
+        logger.info("Invalidating stale overworld cache (geo_type=%s/%s but cached as %s)",
+                     ws.geo_type, _effective_geo_type, cached_layer["layout_mode"])
+        cached_layer = None
+    satisfaction: dict | None = None  # populated only by constraint solver path
+    if cached_layer is not None:
+        layout_data = cached_layer["layout"]
+        layout_mode = cached_layer["layout_mode"]
+        # Check if terrain.png exists on disk for non-geographic modes
+        terrain_png = Path(DATA_DIR) / "maps" / novel_id / "terrain.png"
+        terrain_url = f"/api/novels/{novel_id}/map/terrain" if (
+            layout_mode != "geographic" and terrain_png.is_file()
+        ) else None
+        # Restore geo_coords for cached geographic layouts (coords are not in cache)
+        if layout_mode == "geographic" and target_layer == "overworld" and ws:
+            try:
+                all_names = [loc["name"] for loc in locations]
+                loc_parent_map = {
+                    loc["name"]: loc.get("parent")
+                    for loc in locations
+                }
+                _scope, _gtype, _resolver, resolved = await geo_auto_resolve(
+                    ws.novel_genre_hint, all_names, all_names, loc_parent_map,
+                    known_geo_type=ws.geo_type,
+                )
+                if resolved:
+                    geo_coords_raw = {
+                        name: {"lat": coord[0], "lng": coord[1]}
+                        for name, coord in resolved.items()
+                    }
+                    # Also estimate geo_coords for unresolved locations
+                    resolved_names = set(resolved.keys())
+                    unresolved_names = [
+                        loc["name"] for loc in locations
+                        if loc["name"] not in resolved_names
+                    ]
+                    if unresolved_names:
+                        estimated = place_unresolved_geo_coords(
+                            unresolved_names, resolved, loc_parent_map,
+                        )
+                        for name, (lat, lng) in estimated.items():
+                            geo_coords_raw[name] = {"lat": lat, "lng": lng}
+            except Exception:
+                logger.warning("Failed to restore geo_coords from cache", exc_info=True)
+    else:
+        # ── Geographic layout: real-world coordinates via GeoNames ──
+        # Only attempt for overworld layer (sub-layers are fictional internal spaces)
+        geo_resolved = False
+        if ws and target_layer == "overworld":
+            try:
+                all_names = [loc["name"] for loc in locations]
+                major_names = [
+                    loc["name"] for loc in locations
+                    if loc.get("level", 0) <= 3
+                ]
+                loc_parent_map = {
+                    loc["name"]: loc.get("parent")
+                    for loc in locations
+                }
+                if ws.geo_type:
+                    # Use cached geo_type — skip re-detection to avoid
+                    # oscillation when chapter range changes the location subset.
+                    # Pass through auto_resolve even for non-realistic types,
+                    # because auto_resolve applies genre-based overrides
+                    # (e.g., historical novels with cached "fantasy" → "mixed").
+                    geo_scope, geo_type, resolver, resolved = await geo_auto_resolve(
+                        ws.novel_genre_hint, all_names, major_names, loc_parent_map,
+                        known_geo_type=ws.geo_type,
+                    )
+                    # Persist the (possibly overridden) geo_type back to cache
+                    if geo_type != ws.geo_type:
+                        ws.geo_type = geo_type
+                        await world_structure_store.save(novel_id, ws)
+                else:
+                    # First-time detection — run full detection and persist
+                    geo_scope, geo_type, resolver, resolved = await geo_auto_resolve(
+                        ws.novel_genre_hint, all_names, major_names, loc_parent_map,
+                    )
+                    ws.geo_type = geo_type
+                    await world_structure_store.save(novel_id, ws)
+
+                if resolver and resolved and geo_type in ("realistic", "mixed"):
+                    # Guard: for "mixed" novels, if too few locations actually
+                    # resolve to real coordinates, the geographic layout is
+                    # misleading (fictional locations cluster near the few real
+                    # ones). Fall back to hierarchy layout instead.
+                    # Historical/wuxia/adventure novels use a lower threshold
+                    # because they have many micro-locations that dilute the ratio.
+                    # Default 0.15 is lenient: geo_type=mixed already confirms
+                    # real-world signal from detect_geo_type().
+                    if geo_type == "mixed":
+                        resolve_ratio = len(resolved) / max(len(all_names), 1)
+                        genre = (ws.novel_genre_hint or "").lower() if ws else ""
+                        min_ratio = 0.10 if genre in ("historical", "wuxia", "realistic", "adventure") else 0.15
+                        if resolve_ratio < min_ratio:
+                            logger.info(
+                                "geo_type=mixed but only %d/%d (%.0f%%) locations "
+                                "resolved (min %.0f%%) — falling back to hierarchy layout",
+                                len(resolved), len(all_names), resolve_ratio * 100,
+                                min_ratio * 100,
+                            )
+                            resolver, resolved = None, None
+
+                if resolver and resolved and geo_type in ("realistic", "mixed"):
+                    # Store raw lat/lng for Leaflet frontend
+                    geo_coords_raw = {
+                        name: {"lat": coord[0], "lng": coord[1]}
+                        for name, coord in resolved.items()
+                    }
+                    layout_data = resolver.project_to_canvas(
+                        resolved, locations, _cw_hash, _ch_hash,
+                    )
+
+                    # Place unresolved names near their resolved neighbors
+                    resolved_names = set(resolved.keys())
+                    unresolved_names = [
+                        loc["name"] for loc in locations
+                        if loc["name"] not in resolved_names
+                    ]
+                    if unresolved_names:
+                        parent_map = {
+                            loc["name"]: loc.get("parent")
+                            for loc in locations
+                        }
+                        extra = place_unresolved_near_neighbors(
+                            unresolved_names, layout_data, locations,
+                            parent_map, _cw_hash, _ch_hash,
+                        )
+                        layout_data.extend(extra)
+
+                        # Also estimate geo_coords for unresolved locations
+                        # so GeoMap (Leaflet) can render them as markers
+                        estimated = place_unresolved_geo_coords(
+                            unresolved_names, resolved, parent_map,
+                        )
+                        for name, (lat, lng) in estimated.items():
+                            geo_coords_raw[name] = {"lat": lat, "lng": lng}
+
+                    layout_mode = "geographic"
+                    terrain_url = None
+                    geo_resolved = True
+
+                    # Cache the geographic layout
+                    await _save_cached_layer_layout(
+                        novel_id, target_layer, ch_hash,
+                        layout_data, "geographic",
+                    )
+            except Exception:
+                logger.warning(
+                    "Geographic layout failed, falling back to solver",
+                    exc_info=True,
+                )
+
+        # ── Existing layout paths (layered / constraint solver) ──
+        if not geo_resolved:
+            if ws is not None and len(ws.layers) > 1:
+                try:
+                    user_overrides = await _load_user_overrides(novel_id)
+                    ws_dict = ws.model_dump()
+                    layer_layouts = await asyncio.to_thread(
+                        compute_layered_layout,
+                        ws_dict, locations, spatial_constraints,
+                        user_overrides, first_chapter_map,
+                        spatial_scale=ws.spatial_scale,
+                    )
+                    # Cache each layer
+                    for lid, litems in layer_layouts.items():
+                        await _save_cached_layer_layout(
+                            novel_id, lid, ch_hash, litems, "layered",
+                        )
+                except Exception:
+                    logger.warning("Layered layout computation failed", exc_info=True)
+
+                # Get the requested layer's data
+                layout_data = layer_layouts.get(target_layer, [])
+                layout_mode = "layered" if layout_data else "hierarchy"
+                # Generate terrain for layered mode too
+                terrain_url = None
+                if layout_data and len(layout_data) >= 3:
+                    layer_coords = {
+                        item["name"]: (item["x"], item["y"])
+                        for item in layout_data
+                        if not item.get("is_portal")
+                    }
+                    if len(layer_coords) >= 3:
+                        t_path = await asyncio.to_thread(
+                            generate_terrain, locations, layer_coords, novel_id
+                        )
+                        terrain_url = f"/api/novels/{novel_id}/map/terrain" if t_path else None
+            else:
+                # Global solve (backward compatible path)
+                layout_data, layout_mode, terrain_url, satisfaction = await _compute_or_load_layout(
+                    novel_id, ch_hash, locations, spatial_constraints,
+                    first_chapter_map,
+                    location_region_bounds=location_region_bounds,
+                )
+
+    # ── Revealed location names for fog of war ──
+    revealed_names: list[str] = []
+    try:
+        analyzed_first, _ = await get_analyzed_range(novel_id)
+        if analyzed_first > 0 and chapter_start > analyzed_first:
+            earlier_names = await _get_earlier_location_names(
+                novel_id, analyzed_first, chapter_start,
+            )
+            active_names = {loc["name"] for loc in locations}
+            revealed_names = sorted(earlier_names - active_names)
+    except Exception:
+        logger.warning("Failed to load revealed location names", exc_info=True)
+
+    # ── Geography context: location descriptions + spatial evidence ──
+    geo_context: list[dict] = []
+    for fact in facts:
+        entries: list[dict] = []
+        for loc in fact.locations:
+            if loc.description:
+                entries.append({
+                    "type": "location",
+                    "name": loc.name,
+                    "text": loc.description,
+                })
+        for sr in fact.spatial_relationships:
+            if sr.narrative_evidence:
+                entries.append({
+                    "type": "spatial",
+                    "name": f"{sr.source} → {sr.target}",
+                    "text": sr.narrative_evidence,
+                })
+        if entries:
+            geo_context.append({"chapter": fact.chapter_id, "entries": entries})
+
+    # ── Detect location/direction/distance conflicts (reuse loaded facts, no extra DB query) ──
+    location_conflicts: list[dict] = []
+    try:
+        parsed_for_conflicts = [
+            (f.chapter_id, f.model_dump()) for f in facts
+        ]
+        alias_map = await build_alias_map(novel_id)
+        raw_conflicts = _detect_location_conflicts(parsed_for_conflicts)
+        raw_conflicts.extend(_detect_direction_conflicts(parsed_for_conflicts, alias_map))
+        raw_conflicts.extend(_detect_distance_conflicts(parsed_for_conflicts, alias_map))
+        location_conflicts = [c.to_dict() for c in raw_conflicts]
+    except Exception:
+        logger.warning("Failed to detect location conflicts for map", exc_info=True)
+
+    # Compute canvas_size for API response (per-layer scale if available)
+    _ws_scale = ws.spatial_scale if ws else None
+    if ws and layer_id and layer_id != "overworld" and ws.layer_spatial_scales.get(layer_id):
+        _effective_scale = ws.layer_spatial_scales[layer_id]
+    else:
+        _effective_scale = _ws_scale
+    _resp_cw, _resp_ch = SPATIAL_SCALE_CANVAS.get(
+        _effective_scale or "", (CANVAS_WIDTH, CANVAS_HEIGHT)
+    ) if ws else (CANVAS_WIDTH, CANVAS_HEIGHT)
+
+    # Generate landmass contours FIRST (river generation needs land_mask)
+    # Note: generate for overworld layer too (layer_id == "overworld" or None)
+    # Skip for underwater layers (no land masses under water)
+    _is_overworld_like = not layer_id or layer_id == "overworld"
+    _is_underwater = False
+    if ws and layer_id:
+        for _layer_obj in ws.layers:
+            if _layer_obj.layer_id == layer_id and _layer_obj.layer_type == LayerType.underwater:
+                _is_underwater = True
+                break
+    landmass_result: dict = {}
+    roads: list[dict] = []
+    if layout_mode != "geographic" and len(layout_data) >= 3 and _is_overworld_like and not _is_underwater:
+        _lrm = ws.location_region_map if ws else None
+        try:
+            landmass_result = generate_landmasses(
+                locations, layout_data, novel_id,
+                canvas_width=_resp_cw, canvas_height=_resp_ch,
+                location_region_map=_lrm,
+            )
+        except Exception:
+            logger.warning("Failed to generate landmasses", exc_info=True)
+
+    # ── Snap sea-orphan locations to nearest land ──
+    # After landmass generation, some unconstrained locations may visually sit
+    # in the ocean. Snap non-ocean locations back to the nearest land cell.
+    if landmass_result and "_land_mask" in landmass_result:
+        _snap_count = _snap_sea_orphans_to_land(
+            layout_data, locations, landmass_result, spatial_constraints,
+        )
+        if _snap_count:
+            logger.info("Snapped %d sea-orphan locations to nearest land", _snap_count)
+            # Regenerate landmass only if significant snaps occurred (>= 3)
+            # to cover new positions. Minor snaps are already near land.
+            if _snap_count >= 3:
+                try:
+                    landmass_result = generate_landmasses(
+                        locations, layout_data, novel_id,
+                        canvas_width=_resp_cw, canvas_height=_resp_ch,
+                        location_region_map=_lrm,
+                    )
+                    logger.debug("Regenerated landmasses after sea-orphan snap")
+                except Exception:
+                    logger.warning("Failed to regenerate landmasses after snap", exc_info=True)
+
+    # Generate river network AFTER landmasses (clip rivers to land)
+    rivers: list[dict] = []
+    if layout_mode != "geographic" and len(layout_data) >= 3 and _is_overworld_like:
+        # Pass land_mask so rivers terminate at coastline
+        _land_mask_info = None
+        if "_land_mask" in landmass_result:
+            _land_mask_info = {
+                "_land_mask": landmass_result["_land_mask"],
+                "_cell_size": landmass_result["_cell_size"],
+            }
+        rivers = generate_rivers(
+            locations, layout_data, novel_id,
+            canvas_width=_resp_cw, canvas_height=_resp_ch,
+            land_mask_info=_land_mask_info,
+        )
+        roads = generate_roads(locations, layout_data, land_mask_info=_land_mask_info)
+
+    # ── Fill missing layout coordinates ──
+    # Some locations (sub-sites, buildings) may not get layout positions from
+    # the layout engine. Assign them coordinates near their parent using
+    # sunflower-seed angular distribution for organic spread.
+    _layout_map = {item["name"]: item for item in layout_data}
+    _loc_map = {loc["name"]: loc for loc in locations}
+    _missing = [loc for loc in locations if loc["name"] not in _layout_map]
+
+    if _missing:
+        import math as _math
+        _golden_angle = _math.pi * (3 - _math.sqrt(5))  # ~137.5°
+        # Group missing locations by their nearest ancestor that has coords
+        _parent_children: dict[str, list[dict]] = {}
+        for loc in _missing:
+            # Walk up parent chain to find an ancestor with layout coords
+            ancestor = loc.get("parent")
+            visited: set[str] = set()
+            while ancestor and ancestor not in _layout_map and ancestor not in visited:
+                visited.add(ancestor)
+                p = _loc_map.get(ancestor)
+                ancestor = p.get("parent") if p else None
+            if ancestor and ancestor in _layout_map:
+                _parent_children.setdefault(ancestor, []).append(loc)
+
+        for parent_name, children in _parent_children.items():
+            p_item = _layout_map[parent_name]
+            px, py = p_item["x"], p_item["y"]
+            base_r = 60  # base radius for child placement
+            for i, child in enumerate(children):
+                angle = _golden_angle * i
+                r = base_r + 15 * (i // 6)  # expand radius for many children
+                cx = px + r * _math.cos(angle)
+                cy = py + r * _math.sin(angle)
+                new_item = {
+                    "name": child["name"],
+                    "x": round(cx, 1),
+                    "y": round(cy, 1),
+                    "level": p_item.get("level", 0) + 1,
+                }
+                layout_data.append(new_item)
+                _layout_map[child["name"]] = new_item
+
+        if _missing:
+            logger.debug(
+                "Filled %d/%d missing layout positions via parent fallback",
+                len(_missing) - len([l for l in locations if l["name"] not in _layout_map]),
+                len(_missing),
+            )
+
+    # Add placement_confidence to each location
+    constrained_names: set[str] = set()
+    if satisfaction and "constrained_location_names" in satisfaction:
+        constrained_names = set(satisfaction["constrained_location_names"])
+    for loc in locations:
+        loc["placement_confidence"] = "constrained" if loc["name"] in constrained_names else "unconstrained"
+
+    # ── Space theme detection (per-layer) ──────────────
+    # Space theme only for cosmic layers, NOT for overworld (earth surface).
+    _SPACE_LAYER_IDS = {"galaxy", "solarsystem", "trisolaris", "trisolaris-game"}
+    space_theme = bool(layer_id and layer_id in _SPACE_LAYER_IDS)
+
+    result: dict = {
+        "locations": locations,
+        "trajectories": dict(trajectories),
+        "spatial_constraints": spatial_constraints,
+        "layout": layout_data,
+        "layout_mode": layout_mode,
+        "quality_metrics": satisfaction,
+        "terrain_url": terrain_url if not layer_id else None,
+        "rivers": rivers,
+        "roads": roads,
+        "landmasses": landmass_result.get("landmasses", []),
+        "shelves": landmass_result.get("shelves", []),
+        "region_boundaries": region_boundaries,
+        "portals": portals_response,
+        "revealed_location_names": revealed_names,
+        "spatial_scale": _ws_scale,
+        "layer_spatial_scales": ws.layer_spatial_scales if ws else {},
+        "canvas_size": {"width": _resp_cw, "height": _resp_ch},
+        "geography_context": geo_context,
+        "location_conflicts": location_conflicts,
+        "max_mention_count": max((l["mention_count"] for l in locations), default=1),
+        "suggested_min_mentions": 3 if len(locations) > 300 else (2 if len(locations) > 150 else 1),
+        "space_theme": space_theme,
+    }
+    if geo_coords_raw:
+        # Apply user lat/lng overrides on top of auto-resolved coordinates
+        geo_overrides = await _load_geo_overrides(novel_id)
+        for loc_name, (lat, lng) in geo_overrides.items():
+            geo_coords_raw[loc_name] = {"lat": lat, "lng": lng}
+        result["geo_coords"] = geo_coords_raw
+
+    # Include world_structure summary and layer_layouts when no specific layer requested
+    if not layer_id:
+        result["world_structure"] = ws_summary
+        result["layer_layouts"] = layer_layouts
+
+    # Cache result
+    _map_cache[cache_key] = (_time.time(), result)
+    return result
+
+
+def _build_ws_summary(ws) -> dict:
+    """Build a concise world_structure summary for the API response."""
+    layer_summaries = []
+    for layer in ws.layers:
+        # Count locations assigned to this layer
+        loc_count = sum(
+            1 for lid in ws.location_layer_map.values()
+            if lid == layer.layer_id
+        )
+        # Merge layers with ≤1 location into the main world (except overworld)
+        merged = (
+            layer.layer_id != "overworld"
+            and loc_count <= 1
+        )
+        layer_summaries.append({
+            "layer_id": layer.layer_id,
+            "name": layer.name,
+            "layer_type": layer.layer_type.value if hasattr(layer.layer_type, "value") else str(layer.layer_type),
+            "location_count": loc_count,
+            "region_count": len(layer.regions),
+            "merged": merged,
+        })
+    return {"layers": layer_summaries}
+
+
+async def _load_cached_layer_layout(
+    novel_id: str, layer_id: str, chapter_hash: str,
+) -> dict | None:
+    """Load a cached layer layout from the layer_layouts table."""
+    return await world_structure_store.load_layer_layout(
+        novel_id, layer_id, chapter_hash,
+    )
+
+
+async def _save_cached_layer_layout(
+    novel_id: str, layer_id: str, chapter_hash: str,
+    layout_items: list[dict], layout_mode: str,
+) -> None:
+    """Cache a layer layout to the layer_layouts table."""
+    await world_structure_store.save_layer_layout(
+        novel_id, layer_id, chapter_hash,
+        json.dumps(layout_items, ensure_ascii=False),
+        layout_mode,
+    )
+
+
+async def _load_user_overrides(novel_id: str) -> dict[str, tuple[float, float]]:
+    """Load user-adjusted coordinates for a novel."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT location_name, x, y FROM map_user_overrides WHERE novel_id = ?",
+            (novel_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row["location_name"]: (row["x"], row["y"]) for row in rows}
+    finally:
+        await conn.close()
+
+
+async def _load_locked_parents(novel_id: str) -> dict[str, str]:
+    """Load locked parent assignments from user overrides."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT location_name, locked_parent FROM map_user_overrides "
+            "WHERE novel_id = ? AND constraint_type = 'locked' AND locked_parent IS NOT NULL",
+            (novel_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row["location_name"]: row["locked_parent"] for row in rows}
+    finally:
+        await conn.close()
+
+
+async def save_user_override(
+    novel_id: str, location_name: str, x: float, y: float,
+    *, lat: float | None = None, lng: float | None = None,
+    constraint_type: str = "position", locked_parent: str | None = None,
+) -> None:
+    """Save or update a user coordinate override and invalidate layout cache."""
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            """INSERT INTO map_user_overrides
+               (novel_id, location_name, x, y, lat, lng, constraint_type, locked_parent, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT (novel_id, location_name)
+               DO UPDATE SET x=excluded.x, y=excluded.y,
+                             lat=excluded.lat, lng=excluded.lng,
+                             constraint_type=excluded.constraint_type,
+                             locked_parent=excluded.locked_parent,
+                             updated_at=datetime('now')""",
+            (novel_id, location_name, x, y, lat, lng, constraint_type, locked_parent),
+        )
+        # Invalidate all cached layouts for this novel
+        await conn.execute(
+            "DELETE FROM map_layouts WHERE novel_id = ?", (novel_id,),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+
+async def _load_geo_overrides(novel_id: str) -> dict[str, tuple[float, float]]:
+    """Load user-adjusted geographic (lat/lng) overrides for a novel."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT location_name, lat, lng FROM map_user_overrides "
+            "WHERE novel_id = ? AND lat IS NOT NULL AND lng IS NOT NULL",
+            (novel_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row["location_name"]: (row["lat"], row["lng"]) for row in rows}
+    finally:
+        await conn.close()
+
+
+async def invalidate_layout_cache(novel_id: str) -> None:
+    """Invalidate layout cache when chapter facts are updated.
+
+    Preserves the satisfaction baseline for quality regression comparison.
+    """
+    conn = await get_connection()
+    try:
+        # Save the old satisfaction as baseline before deleting the cache
+        cursor = await conn.execute(
+            "SELECT satisfaction_json FROM map_layouts WHERE novel_id = ? ORDER BY created_at DESC LIMIT 1",
+            (novel_id,),
+        )
+        row = await cursor.fetchone()
+        old_satisfaction = row["satisfaction_json"] if row and row["satisfaction_json"] else None
+
+        await conn.execute(
+            "DELETE FROM map_layouts WHERE novel_id = ?", (novel_id,),
+        )
+
+        # Store baseline in a sentinel row that will be overwritten on next compute
+        if old_satisfaction:
+            await conn.execute(
+                """INSERT INTO map_layouts (novel_id, chapter_hash, layout_json, layout_mode, satisfaction_json, created_at)
+                   VALUES (?, '__baseline__', '[]', 'baseline', ?, datetime('now'))""",
+                (novel_id, old_satisfaction),
+            )
+
+        await conn.commit()
+    finally:
+        await conn.close()
+    # Also invalidate layer-level layout cache
+    await world_structure_store.delete_layer_layouts(novel_id)
+
+
+async def _compute_or_load_layout(
+    novel_id: str,
+    chapter_hash: str,
+    locations: list[dict],
+    spatial_constraints: list[dict],
+    first_chapter: dict[str, int] | None = None,
+    location_region_bounds: dict[str, tuple[float, float, float, float]] | None = None,
+) -> tuple[list[dict], str, str | None, dict | None]:
+    """Load cached layout or compute a new one.
+
+    Returns (layout_list, layout_mode, terrain_url, satisfaction_or_None).
+    """
+    # Try loading from cache
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT layout_json, layout_mode, terrain_path, satisfaction_json FROM map_layouts WHERE novel_id = ? AND chapter_hash = ?",
+            (novel_id, chapter_hash),
+        )
+        row = await cursor.fetchone()
+        if row:
+            layout_data = json.loads(row["layout_json"])
+            terrain_path = row["terrain_path"]
+            terrain_url = f"/api/novels/{novel_id}/map/terrain" if terrain_path else None
+            cached_satisfaction = None
+            if row["satisfaction_json"]:
+                try:
+                    cached_satisfaction = json.loads(row["satisfaction_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return layout_data, row["layout_mode"], terrain_url, cached_satisfaction
+    finally:
+        await conn.close()
+
+    if not locations:
+        return [], "hierarchy", None, None
+
+    # Load user overrides
+    user_overrides = await _load_user_overrides(novel_id)
+
+    # Compute layout in thread pool to avoid blocking the event loop
+    solver = ConstraintSolver(
+        locations, spatial_constraints, user_overrides,
+        first_chapter=first_chapter,
+        location_region_bounds=location_region_bounds,
+    )
+    layout_coords, layout_mode, satisfaction = await asyncio.to_thread(solver.solve)
+    layout_data = layout_to_list(layout_coords, locations)
+
+    # Generate terrain image in thread pool (all non-geographic modes)
+    terrain_path = None
+    if len(layout_coords) >= 3:
+        terrain_path = await asyncio.to_thread(
+            generate_terrain, locations, layout_coords, novel_id
+        )
+
+    terrain_url = f"/api/novels/{novel_id}/map/terrain" if terrain_path else None
+
+    # Load quality baseline (from previous analysis) and compute diff
+    satisfaction_json = json.dumps(satisfaction, ensure_ascii=False) if satisfaction else None
+    conn = await get_connection()
+    try:
+        # Check for baseline row saved during invalidation
+        cursor = await conn.execute(
+            "SELECT satisfaction_json FROM map_layouts WHERE novel_id = ? AND chapter_hash = '__baseline__'",
+            (novel_id,),
+        )
+        baseline_row = await cursor.fetchone()
+        if baseline_row and baseline_row["satisfaction_json"] and satisfaction:
+            try:
+                baseline = json.loads(baseline_row["satisfaction_json"])
+                # Compute quality diff
+                old_sat = baseline.get("total_satisfaction", 0)
+                new_sat = satisfaction.get("total_satisfaction", 0)
+                old_cnt = baseline.get("total_constraints", 0)
+                new_cnt = satisfaction.get("total_constraints", 0)
+                satisfaction["quality_baseline"] = {
+                    "previous_satisfaction": old_sat,
+                    "previous_constraints": old_cnt,
+                    "satisfaction_delta": round(new_sat - old_sat, 4),
+                    "constraints_delta": new_cnt - old_cnt,
+                }
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Clean up baseline row
+            await conn.execute(
+                "DELETE FROM map_layouts WHERE novel_id = ? AND chapter_hash = '__baseline__'",
+                (novel_id,),
+            )
+
+        # Cache the result (including satisfaction for quality baseline tracking)
+        # Re-serialize after adding baseline diff
+        satisfaction_json = json.dumps(satisfaction, ensure_ascii=False) if satisfaction else None
+        await conn.execute(
+            """INSERT INTO map_layouts (novel_id, chapter_hash, layout_json, layout_mode, terrain_path, satisfaction_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT (novel_id, chapter_hash)
+               DO UPDATE SET layout_json=excluded.layout_json, layout_mode=excluded.layout_mode,
+                            terrain_path=excluded.terrain_path, satisfaction_json=excluded.satisfaction_json,
+                            created_at=datetime('now')""",
+            (novel_id, chapter_hash, json.dumps(layout_data, ensure_ascii=False), layout_mode, terrain_path, satisfaction_json),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    return layout_data, layout_mode, terrain_url, satisfaction
+
+
+# ── Timeline (Events) ────────────────────────────
+
+
+_ITEM_NOISE_ACTIONS = {"出现", "存在", "提及"}
+_MIN_APPEARANCE_CHAPTERS = 3  # characters must appear in ≥ N chapters to get a 登场 event
+_MAJOR_PARTICIPANT_THRESHOLD = 5  # ≥ N participants → is_major
+
+
+async def get_timeline_data(
+    novel_id: str, chapter_start: int, chapter_end: int
+) -> dict:
+    facts = await _load_facts_in_range(novel_id, chapter_start, chapter_end)
+
+    events: list[dict] = []
+    swimlanes: dict[str, list[int]] = defaultdict(list)
+    seen_characters: set[str] = set()
+
+    event_id = 0
+
+    def _add(summary: str, etype: str, importance: str,
+             participants: list[str], location: str | None, ch: int,
+             extra: dict | None = None) -> None:
+        nonlocal event_id
+        is_major = len(participants) >= _MAJOR_PARTICIPANT_THRESHOLD
+        if is_major and importance == "medium":
+            importance = "high"
+        entry: dict = {
+            "id": event_id,
+            "chapter": ch,
+            "summary": summary,
+            "type": etype,
+            "importance": importance,
+            "participants": participants,
+            "location": location,
+            "is_major": is_major,
+        }
+        if extra:
+            entry.update(extra)
+        events.append(entry)
+        for p in participants:
+            swimlanes[p].append(event_id)
+        event_id += 1
+
+    # ── Pre-compute character chapter counts (for 登场 filtering) ──
+    char_chapters: dict[str, set[int]] = defaultdict(set)
+    for fact in facts:
+        for char in fact.characters:
+            char_chapters[char.name].add(fact.chapter_id)
+
+    # ── Pre-compute relationship history for change detection ──
+    prev_relations: dict[tuple[str, str], str] = {}  # (a, b) → last relation_type
+
+    # ── Load scene data for emotional_tone linking ──
+    from src.db import chapter_fact_store
+    scene_tone_map: dict[int, list[dict]] = {}  # chapter → [{characters, tone}]
+    try:
+        all_scenes = await chapter_fact_store.get_all_scenes(novel_id)
+        for scene in all_scenes:
+            ch_id = scene.get("chapter", 0)
+            if ch_id < chapter_start or ch_id > chapter_end:
+                continue
+            scene_tone_map.setdefault(ch_id, []).append({
+                "characters": set(scene.get("characters", [])),
+                "tone": scene.get("emotional_tone", ""),
+                "location": scene.get("location", ""),
+            })
+    except Exception:
+        pass  # scene data unavailable, continue without
+
+    def _match_scene_tone(ch: int, participants: list[str]) -> str | None:
+        """Find best-matching scene emotional_tone for an event."""
+        scenes = scene_tone_map.get(ch)
+        if not scenes:
+            return None
+        p_set = set(participants)
+        best_overlap = 0
+        best_tone = None
+        for s in scenes:
+            overlap = len(p_set & s["characters"])
+            if overlap > best_overlap and s["tone"]:
+                best_overlap = overlap
+                best_tone = s["tone"]
+        return best_tone
+
+    for fact in facts:
+        ch = fact.chapter_id
+
+        # ── Original events (战斗/成长/社交/旅行/其他) ──
+        for ev in fact.events:
+            tone = _match_scene_tone(ch, ev.participants)
+            _add(ev.summary, ev.type, ev.importance,
+                 ev.participants, ev.location, ch,
+                 {"emotional_tone": tone} if tone else None)
+
+        # ── Derived: 角色登场 (character first appearance) ──
+        # Only emit for characters appearing in ≥ N chapters (filters one-timers)
+        for char in fact.characters:
+            if char.name not in seen_characters:
+                seen_characters.add(char.name)
+                if len(char_chapters.get(char.name, set())) >= _MIN_APPEARANCE_CHAPTERS:
+                    loc = char.locations_in_chapter[0] if char.locations_in_chapter else None
+                    _add(f"{char.name} 首次登场", "角色登场", "medium",
+                         [char.name], loc, ch)
+
+        # ── Derived: 物品交接 (item events) ──
+        # Filter noise actions (出现/存在/提及)
+        for ie in fact.item_events:
+            if ie.action in _ITEM_NOISE_ACTIONS:
+                continue
+            participants = [ie.actor]
+            if ie.recipient:
+                participants.append(ie.recipient)
+            summary = f"{ie.actor} {ie.action} {ie.item_name}"
+            if ie.recipient:
+                summary += f" → {ie.recipient}"
+            _add(summary, "物品交接", "medium", participants, None, ch)
+
+        # ── Derived: 组织变动 (org events) ──
+        for oe in fact.org_events:
+            participants = []
+            if oe.member:
+                participants.append(oe.member)
+            summary = f"{oe.member or '?'} {oe.action} {oe.org_name}"
+            if oe.role:
+                summary += f" ({oe.role})"
+            _add(summary, "组织变动", "medium", participants, None, ch)
+
+        # ── Derived: 关系变化 (relationship changes) ──
+        for rel in fact.relationships:
+            key = (min(rel.person_a, rel.person_b), max(rel.person_a, rel.person_b))
+            old_type = prev_relations.get(key)
+            prev_relations[key] = rel.relation_type
+            # Only emit when explicitly new or changed
+            if rel.is_new and old_type is None:
+                summary = f"{rel.person_a} 与 {rel.person_b} 建立{rel.relation_type}关系"
+                if rel.evidence:
+                    summary += f"（{rel.evidence[:30]}）"
+                _add(summary, "关系变化", "medium",
+                     [rel.person_a, rel.person_b], None, ch)
+            elif rel.previous_type and rel.previous_type != rel.relation_type:
+                summary = f"{rel.person_a} 与 {rel.person_b} 关系变化：{rel.previous_type}→{rel.relation_type}"
+                _add(summary, "关系变化", "high",
+                     [rel.person_a, rel.person_b], None, ch)
+
+    # ── Compute suggested defaults ──
+    total = len(events)
+    suggested_hidden_types = ["角色登场", "物品交接"]
+    suggested_min_swimlane = 5 if len(swimlanes) > 100 else 3 if len(swimlanes) > 30 else 1
+
+    return {
+        "events": events,
+        "swimlanes": dict(swimlanes),
+        "suggested_hidden_types": suggested_hidden_types,
+        "suggested_min_swimlane": suggested_min_swimlane,
+        "total_swimlanes": len(swimlanes),
+    }
+
+
+# ── Factions (Organization Network) ──────────────
+
+# Location types that indicate an organization
+_ORG_TYPE_KEYWORDS = ("门", "派", "宗", "帮", "教", "盟", "会", "阁", "堂",
+                       "军", "朝", "国", "族", "殿", "府", "院")
+
+
+def _is_org_type(loc_type: str) -> bool:
+    """Check whether a location type represents an organization."""
+    return any(kw in loc_type for kw in _ORG_TYPE_KEYWORDS)
+
+
+async def get_factions_data(
+    novel_id: str, chapter_start: int, chapter_end: int
+) -> dict:
+    facts = await _load_facts_in_range(novel_id, chapter_start, chapter_end)
+    alias_map = await build_alias_map(novel_id)
+
+    # org_name -> {name, type}
+    org_info: dict[str, dict] = {}
+    # org_name -> {person_name -> {person, role, status}}
+    org_members: dict[str, dict[str, dict]] = defaultdict(dict)
+    org_relations: list[dict] = []
+
+    # ── Source 1: org_events (explicit membership changes) ──
+    for fact in facts:
+        ch = fact.chapter_id
+
+        for oe in fact.org_events:
+            org_name = alias_map.get(oe.org_name, oe.org_name)
+            if org_name not in org_info:
+                org_info[org_name] = {"name": org_name, "type": oe.org_type}
+
+            if oe.member:
+                member = alias_map.get(oe.member, oe.member)
+                existing = org_members[org_name].get(member)
+                # Keep the latest action; prefer explicit role over None
+                if existing is None or oe.role:
+                    org_members[org_name][member] = {
+                        "person": member,
+                        "role": oe.role or (existing["role"] if existing else ""),
+                        "status": oe.action,
+                    }
+
+            if oe.org_relation:
+                other = alias_map.get(oe.org_relation.other_org, oe.org_relation.other_org)
+                org_relations.append({
+                    "source": org_name,
+                    "target": other,
+                    "type": oe.org_relation.type,
+                    "chapter": ch,
+                })
+                # Ensure the related org is also tracked
+                if other not in org_info:
+                    org_info[other] = {
+                        "name": other,
+                        "type": "组织",
+                    }
+
+    # ── Source 2: locations with org-like types ──
+    # Many sects/factions appear as locations (type="门派"/"帮派" etc.)
+    # Characters visiting these locations are associated as members.
+    org_locations: set[str] = set()  # canonical location names that are orgs
+    for fact in facts:
+        for loc in fact.locations:
+            loc_canonical = alias_map.get(loc.name, loc.name)
+            if _is_org_type(loc.type) and loc_canonical not in org_info:
+                org_info[loc_canonical] = {"name": loc_canonical, "type": loc.type}
+            if _is_org_type(loc.type):
+                org_locations.add(loc_canonical)
+
+    # ── Source 3: characters at org-locations ──
+    for fact in facts:
+        for char in fact.characters:
+            char_canonical = alias_map.get(char.name, char.name)
+            for loc_name in char.locations_in_chapter:
+                loc_canonical = alias_map.get(loc_name, loc_name)
+                if loc_canonical in org_locations:
+                    if char_canonical not in org_members[loc_canonical]:
+                        org_members[loc_canonical][char_canonical] = {
+                            "person": char_canonical,
+                            "role": "",
+                            "status": "出现",
+                        }
+
+    # ── Source 4: new_concepts about org systems ──
+    for fact in facts:
+        for concept in fact.new_concepts:
+            cat = concept.category
+            if _is_org_type(cat) and concept.name not in org_info:
+                org_info[concept.name] = {"name": concept.name, "type": cat}
+
+    # Build output
+    orgs = [
+        {
+            "id": name,
+            "name": name,
+            "type": info["type"],
+            "member_count": len(org_members.get(name, {})),
+        }
+        for name, info in org_info.items()
+    ]
+    orgs.sort(key=lambda o: -o["member_count"])
+
+    members = {
+        org: list(members_map.values())
+        for org, members_map in org_members.items()
+    }
+
+    return {"orgs": orgs, "relations": org_relations, "members": members}

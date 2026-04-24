@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Concept",
+  "description": "概念/功法/物品数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "概念唯一标识"
+    },
+    "name": {
+      "type": "string",
+      "description": "概念名称"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "修炼体系",
+        "种族",
+        "货币",
+        "功法",
+        "技能",
+        "丹药",
+        "阵法",
+        "法宝",
+        "门派",
+        "官职",
+        "其他"
+      ],
+      "description": "概念类别"
+    },
+    "definition": {
+      "type": "string",
+      "description": "概念定义/描述"
+    },
+    "related": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "相关概念"
+    },
+    "first_appearance": {
+      "type": "string",
+      "description": "首次出现章节"
+    }
+  },
+  "required": ["name", "category"]
+}

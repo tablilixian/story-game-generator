@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Scene",
+  "description": "场景/地点数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "场景唯一标识"
+    },
+    "key": {
+      "type": "string",
+      "description": "英文键名，用于 Monogatari，如 school, library, home"
+    },
+    "name": {
+      "type": "string",
+      "description": "场景名称"
+    },
+    "type": {
+      "type": "string",
+      "description": "地点类型：城市/村庄/山/洞府/府邸/宫殿/城门/关隘等"
+    },
+    "parent": {
+      "type": "string",
+      "description": "上级地点（包含关系），如城市属于国家，山属于大陆"
+    },
+    "peers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "同级并列地点（相邻或对称）"
+    },
+    "description": {
+      "type": "string",
+      "description": "场景描述"
+    },
+    "timeOfDay": {
+      "type": "string",
+      "enum": ["morning", "afternoon", "evening", "night", "day", "dusk", "dawn"],
+      "description": "时间段"
+    },
+    "weather": {
+      "type": "string",
+      "enum": ["sunny", "cloudy", "rainy", "snowy", "foggy", "stormy"],
+      "description": "天气"
+    },
+    "atmosphere": {
+      "type": "string",
+      "description": "氛围，如 紧张、温馨、恐怖"
+    },
+    "location": {
+      "type": "string",
+      "description": "地点类型：室内/室外/学校等"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["setting", "referenced", "boundary"],
+      "description": "叙事角色：setting=实际到达，referenced=仅提及，boundary=方位参照"
+    },
+    "characters": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "在此场景出现的角色ID列表"
+    },
+    "chapterRef": {
+      "type": "string",
+      "description": "关联的章节ID"
+    }
+  },
+  "required": ["id", "key", "name"]
+}

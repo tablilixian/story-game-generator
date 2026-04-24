@@ -1,0 +1,143 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec for AI Reader V2 backend sidecar.
+
+Build:
+    cd backend
+    uv pip install pyinstaller
+    pyinstaller ai-reader-sidecar.spec
+
+Output lands in dist/ai-reader-sidecar (single file).
+Copy to src-tauri/binaries/ with target-triple suffix — handled by scripts/build-sidecar.sh.
+"""
+
+import importlib
+import sys
+from pathlib import Path
+
+backend_dir = Path(SPECPATH)
+
+# ── Locate jieba dict data ───────────────────────
+jieba_pkg = Path(importlib.import_module("jieba").__file__).parent
+jieba_datas = [
+    (str(jieba_pkg / "dict.txt"), "jieba"),
+    (str(jieba_pkg / "finalseg"), "jieba/finalseg"),
+    (str(jieba_pkg / "posseg"), "jieba/posseg"),
+    (str(jieba_pkg / "analyse"), "jieba/analyse"),
+    (str(jieba_pkg / "lac_small"), "jieba/lac_small"),
+]
+
+a = Analysis(
+    ["sidecar_entry.py"],
+    pathex=[str(backend_dir)],
+    binaries=[],
+    datas=[
+        # Application source
+        ("src", "src"),
+        # jieba dictionaries
+        *jieba_datas,
+    ],
+    hiddenimports=[
+        # ── uvicorn internals ──
+        "uvicorn",
+        "uvicorn.logging",
+        "uvicorn.loops",
+        "uvicorn.loops.auto",
+        "uvicorn.protocols",
+        "uvicorn.protocols.http",
+        "uvicorn.protocols.http.auto",
+        "uvicorn.protocols.websockets",
+        "uvicorn.protocols.websockets.auto",
+        "uvicorn.lifespan",
+        "uvicorn.lifespan.on",
+        # ── FastAPI + Starlette ──
+        "fastapi",
+        "fastapi.responses",
+        "fastapi.middleware",
+        "starlette",
+        "starlette.responses",
+        "starlette.websockets",
+        "starlette.middleware.cors",
+        # ── Pydantic ──
+        "pydantic",
+        "pydantic.deprecated.decorator",
+        # ── Async DB ──
+        "aiosqlite",
+        "sqlite3",
+        # ── HTTP client ──
+        "httpx",
+        "httpx._transports",
+        # ── WebSocket ──
+        "websockets",
+        # ── NLP ──
+        "jieba",
+        "jieba.finalseg",
+        "jieba.posseg",
+        "jieba.analyse",
+        # ── Embeddings / Vector DB ──
+        "chromadb",
+        "onnxruntime",
+        "tokenizers",
+        # ── Multipart upload ──
+        "multipart",
+        "python_multipart",
+        # ── Image (map tiles) ──
+        "PIL",
+        # ── Perlin noise (map layout) ──
+        "opensimplex",
+        # ── Secure credential storage ──
+        "keyring",
+        "keyring.backends",
+        # ── Stdlib extras sometimes missed ──
+        "email.mime.text",
+        "email.mime.multipart",
+    ],
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=[
+        # ── Large ML packages (desktop uses ONNX fallback, not torch) ──
+        "torch",
+        "torchgen",
+        "torchvision",
+        "torchaudio",
+        "sentence_transformers",
+        "transformers",
+        "safetensors",
+        "huggingface_hub",
+        "hf_xet",
+        "sympy",
+        # ── Unused packages ──
+        "tkinter",
+        "matplotlib",
+        "IPython",
+        "notebook",
+        "pytest",
+        "setuptools",
+        "pip",
+        "wheel",
+        "kubernetes",
+    ],
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data)
+
+_is_macos = sys.platform == "darwin"
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name="ai-reader-sidecar",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    # macOS: ad-hoc sign all embedded binaries so extracted frameworks
+    # have matching Team ID with the sidecar process (fixes Python 3.13+ framework signing)
+    codesign_identity="-" if _is_macos else None,
+    entitlements_file=str(Path(SPECPATH).parent / "frontend" / "src-tauri" / "entitlements.plist") if _is_macos else None,
+)

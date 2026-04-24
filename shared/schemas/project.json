@@ -1,0 +1,181 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NovelProject",
+  "description": "小说转视觉小说项目数据结构 - 整合 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "项目唯一标识"
+    },
+    "title": {
+      "type": "string",
+      "description": "项目标题"
+    },
+    "sourceNovel": {
+      "type": "string",
+      "description": "原始小说文本"
+    },
+    "language": {
+      "type": "string",
+      "default": "zh-CN",
+      "description": "目标语言"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "chapters": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Chapter" }
+    },
+    "characters": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Character" }
+    },
+    "scenes": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Scene" }
+    },
+    "relationships": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Relationship" }
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Event" }
+    },
+    "concepts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Concept" }
+    },
+    "spatialRelationships": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/SpatialRelationship" }
+    },
+    "chapterFacts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ChapterFact" }
+    },
+    "visualNovelScript": {
+      "$ref": "#/definitions/VisualNovelScript"
+    }
+  },
+  "definitions": {
+    "Chapter": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "order": { "type": "number" },
+        "summary": { "type": "string" },
+        "characters": { "type": "array", "items": { "type": "string" } },
+        "scenes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Character": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "key": { "type": "string" },
+        "name": { "type": "string" },
+        "new_aliases": { "type": "array", "items": { "type": "string" } },
+        "color": { "type": "string" },
+        "gender": { "type": "string" },
+        "age": { "type": "string" },
+        "personality": { "type": "string" },
+        "appearance": { "type": "string" },
+        "role": { "type": "string" },
+        "firstAppearance": { "type": "string" }
+      }
+    },
+    "Scene": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "key": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "parent": { "type": "string" },
+        "peers": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "timeOfDay": { "type": "string" },
+        "weather": { "type": "string" },
+        "atmosphere": { "type": "string" },
+        "role": { "type": "string" },
+        "characters": { "type": "array", "items": { "type": "string" } },
+        "chapterRef": { "type": "string" }
+      }
+    },
+    "Relationship": {
+      "type": "object",
+      "properties": {
+        "person_a": { "type": "string" },
+        "person_b": { "type": "string" },
+        "relation_type": { "type": "string" },
+        "evidence": { "type": "string" }
+      }
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "type": { "type": "string" },
+        "importance": { "type": "string" },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "location": { "type": "string" },
+        "chapter_ref": { "type": "string" }
+      }
+    },
+    "Concept": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "definition": { "type": "string" },
+        "related": { "type": "array", "items": { "type": "string" } },
+        "first_appearance": { "type": "string" }
+      }
+    },
+    "SpatialRelationship": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "relation_type": { "type": "string" },
+        "value": { "type": "string" },
+        "confidence": { "type": "string" },
+        "narrative_evidence": { "type": "string" }
+      }
+    },
+    "ChapterFact": {
+      "type": "object",
+      "properties": {
+        "chapter_id": { "type": "integer" },
+        "novel_id": { "type": "string" },
+        "characters": { "type": "array" },
+        "relationships": { "type": "array" },
+        "locations": { "type": "array" },
+        "spatial_relationships": { "type": "array" },
+        "events": { "type": "array" },
+        "new_concepts": { "type": "array" }
+      }
+    },
+    "VisualNovelScript": {
+      "type": "object",
+      "properties": {
+        "characters": { "type": "object" },
+        "scenes": { "type": "object" },
+        "music": { "type": "object" },
+        "script": { "type": "object" }
+      }
+    }
+  }
+}

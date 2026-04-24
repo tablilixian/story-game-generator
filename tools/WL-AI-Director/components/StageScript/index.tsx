@@ -10,6 +10,11 @@ import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
 import SceneBreakdown from './SceneBreakdown';
 import { saveProject as saveProjectToCloud } from '../../services/hybridStorageService';
+import NovelImportPanel from './NovelImportPanel';
+import { parseNovelToChapters } from './novelParser';
+import { analyzeAllChapters } from '../../services/novelAnalysisService';
+import { generateAllVNScripts } from '../../services/vnScriptService';
+import { downloadMonogatariScript, openGamePreview, downloadCompleteGame } from '../../utils/monogatariExport';
 
 // 获取默认的对话模型 ID：优先使用注册中心的激活模型，兜底到常量
 const getDefaultChatModelId = (): string => {
@@ -26,7 +31,7 @@ interface Props {
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
 
-type TabMode = 'story' | 'script';
+type TabMode = 'novel' | 'story' | 'script';
 
 const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWithoutSave, finishAIProcessing, onShowModelConfig, onGeneratingChange }) => {
   const { showAlert } = useAlert();
@@ -47,6 +52,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
   const [isProcessing, setIsProcessing] = useState(false);
   const [isContinuing, setIsContinuing] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [processingMessage, setProcessingMessage] = useState('');
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
@@ -93,6 +99,171 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
 
     return () => clearScriptLogCallback();
   }, []);
+
+  const handleNovelImport = (text: string) => {
+    const chapters = parseNovelToChapters(text);
+    
+    updateProject({
+      novelData: {
+        sourceText: text,
+        chapters: chapters.map((ch, idx) => ({
+          ...ch,
+          id: `ch_${idx + 1}`,
+          characters: [],
+          scenes: []
+        })),
+        characters: [],
+        scenes: [],
+        isAnalyzing: false,
+        analyzedChapters: []
+      }
+    });
+    
+    setActiveTab('novel');
+    logger.debug(LogCategory.AI, `📚 已导入小说，字符数: ${text.length}, 章节数: ${chapters.length}`);
+  };
+
+  const handleAnalyzeChapters = async () => {
+    if (!project.novelData || !project.novelData.chapters.length) {
+      showAlert('请先导入小说并确保有章节内容', { type: 'warning' });
+      return;
+    }
+    
+    updateProject({
+      novelData: {
+        ...project.novelData,
+        isAnalyzing: true
+      }
+    });
+    
+    logger.debug(LogCategory.AI, '🔍 开始分析章节内容...');
+    
+    try {
+      const result = await analyzeAllChapters(
+        project.novelData.chapters,
+        undefined,
+        (current, total) => {
+          logger.debug(LogCategory.AI, `📑 分析进度: ${current}/${total}`);
+        }
+      );
+      
+      updateProject({
+        novelData: {
+          ...project.novelData!,
+          isAnalyzing: false,
+          characters: result.characters,
+          scenes: result.scenes,
+          analyzedChapters: project.novelData!.chapters.map((_, idx) => idx + 1)
+        }
+      });
+      
+      logger.debug(LogCategory.AI, `✅ 章节分析完成: ${result.characters.length} 角色, ${result.scenes.length} 场景`);
+      showAlert(`分析完成！提取了 ${result.characters.length} 个角色和 ${result.scenes.length} 个场景`, { type: 'success' });
+    } catch (error) {
+      logger.error(LogCategory.AI, '章节分析失败:', error);
+      showAlert('章节分析失败，请重试', { type: 'error' });
+      updateProject({
+        novelData: {
+          ...project.novelData!,
+          isAnalyzing: false
+        }
+      });
+    }
+  };
+
+  const handleGenerateScript = async () => {
+    if (!project.novelData || !project.novelData.chapters.length) {
+      showAlert('请先导入小说并分析章节', { type: 'warning' });
+      return;
+    }
+    
+    if (!project.novelData.characters.length || !project.novelData.scenes.length) {
+      showAlert('请先完成角色和场景提取', { type: 'warning' });
+      return;
+    }
+    
+    setIsGeneratingScript(true);
+    logger.debug(LogCategory.AI, '📝 开始生成视觉小说剧本...');
+    
+    try {
+      const scriptData = await generateAllVNScripts(
+        project.novelData.chapters,
+        project.novelData.characters,
+        project.novelData.scenes,
+        (current, total) => {
+          logger.debug(LogCategory.AI, `📝 剧本生成进度: ${current}/${total}`);
+        }
+      );
+      
+      updateProject({
+        novelData: {
+          ...project.novelData,
+          vnScript: scriptData
+        }
+      });
+      
+      logger.debug(LogCategory.AI, `✅ 剧本生成完成: ${Object.keys(scriptData.scripts).length} 个章节剧本`);
+      showAlert(`剧本生成完成！共 ${Object.keys(scriptData.scripts).length} 个章节`, { type: 'success' });
+      
+      setActiveTab('story');
+    } catch (error) {
+      logger.error(LogCategory.AI, '剧本生成失败:', error);
+      showAlert('剧本生成失败，请重试', { type: 'error' });
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  const handleExportMonogatari = () => {
+    if (!project.novelData || !project.novelData.vnScript) {
+      showAlert('请先生成剧本', { type: 'warning' });
+      return;
+    }
+    
+    try {
+      downloadMonogatariScript(project.novelData.vnScript, 'script.js');
+      logger.info(LogCategory.UI, '✅ Monogatari 脚本已导出');
+      showAlert('Monogatari 脚本已导出！', { type: 'success' });
+    } catch (error) {
+      logger.error(LogCategory.UI, '导出失败:', error);
+      showAlert('导出失败，请重试', { type: 'error' });
+    }
+  };
+
+  const handlePreviewGame = () => {
+    if (!project.novelData || !project.novelData.vnScript) {
+      showAlert('请先生成剧本', { type: 'warning' });
+      return;
+    }
+    
+    try {
+      const projectName = project.title || '视觉小说';
+      openGamePreview(project.novelData.vnScript, projectName);
+      logger.info(LogCategory.UI, '🎮 游戏预览已打开');
+    } catch (error) {
+      logger.error(LogCategory.UI, '预览失败:', error);
+      showAlert('预览失败，请重试', { type: 'error' });
+    }
+  };
+
+  const handleExportCompleteGame = async () => {
+    if (!project.novelData || !project.novelData.vnScript) {
+      showAlert('请先生成剧本', { type: 'warning' });
+      return;
+    }
+    
+    try {
+      const projectName = project.title || 'my-visual-novel';
+      await downloadCompleteGame(project.novelData.vnScript, projectName, (message, percent) => {
+        console.log(`[导出] ${message} (${percent}%)`);
+      });
+      logger.info(LogCategory.UI, '✅ 完整游戏已导出');
+      showAlert('完整游戏已导出！', { type: 'success' });
+    } catch (error) {
+      logger.error(LogCategory.UI, '导出失败:', error);
+      showAlert('导出失败，请重试', { type: 'error' });
+    }
+  };
 
   const handleAnalyze = async () => {
     const finalDuration = getFinalValue(localDuration, customDurationInput);
@@ -600,7 +771,53 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
           )}
         </div>
       )}
-      {activeTab === 'story' ? (
+      <div className="flex border-b border-[var(--border-primary)] bg-[var(--bg-elevated)]">
+        <button
+          onClick={() => setActiveTab('novel')}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === 'novel'
+              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          小说导入
+        </button>
+        <button
+          onClick={() => setActiveTab('story')}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === 'story'
+              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          剧本编辑
+        </button>
+        <button
+          onClick={() => setActiveTab('script')}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === 'script'
+              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          分镜预览
+        </button>
+      </div>
+      {activeTab === 'novel' ? (
+        <div className="h-full overflow-hidden">
+          <NovelImportPanel
+            novelData={project.novelData}
+            onImport={handleNovelImport}
+            onAnalyzeChapters={handleAnalyzeChapters}
+            onGenerateScript={handleGenerateScript}
+            onExportMonogatari={handleExportMonogatari}
+            onPreviewGame={handlePreviewGame}
+            onExportCompleteGame={handleExportCompleteGame}
+            isAnalyzing={project.novelData?.isAnalyzing || false}
+            isGeneratingScript={isGeneratingScript}
+          />
+        </div>
+      ) : activeTab === 'story' ? (
         <div className="flex h-full bg-[var(--bg-base)] text-[var(--text-secondary)]">
           <ConfigPanel
             title={localTitle}

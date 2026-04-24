@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Character",
+  "description": "角色数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "角色唯一标识"
+    },
+    "key": {
+      "type": "string",
+      "description": "英文键名，用于 Monogatari，如 xm, xh, alice"
+    },
+    "name": {
+      "type": "string",
+      "description": "角色正式名称"
+    },
+    "new_aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "别名列表（绰号、乳名、字、号、官职称呼等）"
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "description": "十六进制颜色，如 #3498db"
+    },
+    "gender": {
+      "type": "string",
+      "enum": ["male", "female", "other", "unknown"]
+    },
+    "age": {
+      "type": "string",
+      "description": "年龄描述，如 20岁、青年、中年"
+    },
+    "personality": {
+      "type": "string",
+      "description": "性格特点"
+    },
+    "appearance": {
+      "type": "string",
+      "description": "外貌描述"
+    },
+    "role": {
+      "type": "string",
+      "enum": ["protagonist", "supporting", "antagonist", "minor"],
+      "description": "角色定位：主角/配角/反派/龙套"
+    },
+    "firstAppearance": {
+      "type": "string",
+      "description": "首次出场章节ID"
+    },
+    "abilities_gained": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/AbilityGained" },
+      "description": "获得的能力/功法/境界提升"
+    },
+    "locations_in_chapter": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "本章出场地点列表"
+    },
+    "dialogues": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "角色台词列表"
+    }
+  },
+  "definitions": {
+    "AbilityGained": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "description": "维度：境界/技能/身份"
+        },
+        "name": {
+          "type": "string",
+          "description": "能力/功法名称"
+        },
+        "description": {
+          "type": "string",
+          "description": "能力描述"
+        }
+      }
+    }
+  },
+  "required": ["id", "name"]
+}

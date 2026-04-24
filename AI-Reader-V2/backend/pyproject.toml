@@ -1,0 +1,43 @@
+[project]
+name = "ai-reader-v2-backend"
+version = "0.71.4"
+description = "AI Reader V2 Backend - Novel analysis with local LLM"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "aiosqlite",
+    "chromadb",
+    "sentence-transformers",
+    "pydantic>=2.0",
+    "httpx",
+    "websockets",
+    "python-multipart",
+    "pillow>=11.3.0",
+    "opensimplex>=0.4.5.1",
+    "jieba>=0.42.1",
+    "keyring>=25.7.0",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "reportlab>=4.4.10",
+    "matplotlib>=3.9.4",
+    "anthropic>=0.86.0",
+    "python-louvain>=0.16",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "opencc-python-reimplemented>=0.1.7",
+    "pyinstaller>=6.19.0",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "strict"
+markers = [
+    "regression: marks tests that require EBOOK_SAMPLE_DIR and ground truth baseline",
+]

@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SpatialRelationship",
+  "description": "空间关系数据结构 - 基于 AI-Reader-V2 ChapterFact",
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "源地点"
+    },
+    "target": {
+      "type": "string",
+      "description": "目标地点"
+    },
+    "relation_type": {
+      "type": "string",
+      "enum": [
+        "direction",
+        "distance",
+        "contains",
+        "adjacent",
+        "separated_by",
+        "terrain",
+        "in_between",
+        "travel_path",
+        "relative_scale",
+        "cluster"
+      ],
+      "description": "关系类型"
+    },
+    "value": {
+      "type": "string",
+      "description": "关系值，如 north_of, 三天路程, 河流等"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "置信度：high=原文明确描述, medium=可推断, low=模糊暗示"
+    },
+    "narrative_evidence": {
+      "type": "string",
+      "description": "原文依据"
+    },
+    "distance_class": {
+      "type": "string",
+      "enum": ["near", "medium", "far", "very_far"],
+      "description": "距离分类"
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "数值化置信度 0.0-1.0"
+    },
+    "waypoints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "途经地点列表（仅 travel_path 类型）"
+    }
+  },
+  "required": ["source", "target", "relation_type", "value"]
+}
