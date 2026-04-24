@@ -217,6 +217,67 @@ export interface ScriptData {
   storyParagraphs: { id: number; text: string; sceneRefId: string }[];
 }
 
+// Novel Phase Data (小说转视觉小说)
+export interface NovelChapter {
+  id: string;
+  title: string;
+  content: string;
+  order: number;
+  summary?: string;
+  characters: string[]; // 角色ID列表
+  scenes: string[]; // 场景ID列表
+}
+
+export interface NovelCharacter {
+  id: string;
+  key: string; // 英文键名，用于 Monogatari
+  name: string;
+  new_aliases?: string[]; // 别名列表
+  color?: string; // 十六进制颜色
+  gender?: 'male' | 'female' | 'other' | 'unknown';
+  age?: string;
+  personality?: string;
+  appearance?: string;
+  role?: 'protagonist' | 'supporting' | 'antagonist' | 'minor';
+  firstAppearance?: string; // 首次出场章节ID
+  locations_in_chapter?: string[]; // 本章出场地点
+}
+
+export interface NovelScene {
+  id: string;
+  key: string; // 英文键名
+  name: string;
+  type?: string; // 地点类型
+  parent?: string; // 上级地点
+  description?: string;
+  timeOfDay?: 'morning' | 'afternoon' | 'evening' | 'night' | 'day' | 'dusk' | 'dawn';
+  weather?: 'sunny' | 'cloudy' | 'rainy' | 'snowy' | 'foggy' | 'stormy';
+  atmosphere?: string;
+  characters: string[]; // 角色ID列表
+  chapterRef?: string; // 关联章节ID
+}
+
+export interface LanguageMetadata {
+  name: string;
+  code: string;
+  icon: string;
+}
+
+export interface NovelData {
+  sourceText: string; // 原始小说文本
+  chapters: NovelChapter[];
+  characters: NovelCharacter[];
+  scenes: NovelScene[];
+  isAnalyzing: boolean; // 是否正在分析
+  analyzedChapters: number[]; // 已分析章节ID列表
+  vnScript?: {
+    characters: Record<string, { name: string; color: string }>;
+    scenes: Record<string, string>;
+    scripts: Record<string, any>;
+    languages?: LanguageMetadata[];
+  } | null; // 生成的VN剧本
+}
+
 export interface RenderLog {
   id: string;
   timestamp: number; // Unix timestamp when API was called
@@ -252,6 +313,9 @@ export interface ProjectState {
   shots: Shot[];
   isParsingScript: boolean;
   renderLogs: RenderLog[]; // History of all API calls for this project
+
+  // Novel Phase Data (小说转视觉小说)
+  novelData?: NovelData | null;
 }
 
 // ============================================
