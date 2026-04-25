@@ -227,16 +227,44 @@ function mergeDuplicateCharacters(characters: NovelCharacter[]): NovelCharacter[
     const targetChar = nameMap.get(target)!;
     const keeperChar = nameMap.get(keeper)!;
     
-    const mergedAliases = [...new Set([...keeperChar.new_aliases, ...targetChar.new_aliases, target])];
-    const cleanAliases = mergedAliases.filter(a => a !== keeper);
-    const mergedLocations = [...new Set([...keeperChar.locations_in_chapter, ...targetChar.locations_in_chapter])];
+    // 决定哪个名字更适合作为正名
+    let finalName = keeper;
+    let finalAliases = [...new Set([...keeperChar.new_aliases, ...targetChar.new_aliases, target])];
     
-    nameMap.set(keeper, {
+    // 检查哪个名字更可能是正式姓名
+    if (isMoreFormalName(target, keeper)) {
+      finalName = target;
+      finalAliases = [...new Set([...targetChar.new_aliases, ...keeperChar.new_aliases, keeper])];
+    }
+    
+    const mergedLocations = [...new Set([...keeperChar.locations_in_chapter, ...targetChar.locations_in_chapter])];
+    const mergedPersonality = keeperChar.personality || targetChar.personality;
+    const mergedAppearance = keeperChar.appearance || targetChar.appearance;
+    const mergedGender = keeperChar.gender || targetChar.gender;
+    const mergedAge = keeperChar.age || targetChar.age;
+    const mergedRole = keeperChar.role || targetChar.role;
+    
+    // 保留更完整的角色信息
+    nameMap.set(finalName, {
       ...keeperChar,
-      new_aliases: cleanAliases,
-      locations_in_chapter: mergedLocations
+      ...targetChar,
+      name: finalName,
+      new_aliases: finalAliases.filter(a => a !== finalName),
+      locations_in_chapter: mergedLocations,
+      personality: mergedPersonality,
+      appearance: mergedAppearance,
+      gender: mergedGender,
+      age: mergedAge,
+      role: mergedRole
     });
-    nameMap.delete(target);
+    
+    // 删除被合并的角色
+    if (finalName !== keeper) {
+      nameMap.delete(keeper);
+    }
+    if (finalName !== target) {
+      nameMap.delete(target);
+    }
   }
   
   const cleaned = new Map<string, NovelCharacter>();
@@ -252,6 +280,90 @@ function mergeDuplicateCharacters(characters: NovelCharacter[]): NovelCharacter[
   }
   
   return Array.from(cleaned.values());
+}
+
+/**
+ * 判断哪个名字更可能是正式姓名
+ */
+function isMoreFormalName(name1: string, name2: string): boolean {
+  const compoundSurnames = new Set([
+    '欧阳', '司马', '上官', '夏侯', '诸葛', '东方', '南宫', '皇甫', '尉迟', '公孙',
+    '轩辕', '长孙', '宇文', '慕容', '拓跋', '万俟', '呼延', '赫连', '澹台', '公羊',
+    '百里', '谷梁', '宰父', '夹谷', '段干', '漆雕', '东郭', '微生', '梁丘', '左丘',
+    '东门', '西门', '南门', '北门', '仲孙', '叔孙', '季孙', '言', '闻', '将我',
+    '太史', '端木', '巫马', '公西', '颛孙', '壤驷', '公良', '漆雕', '乐正', '壤驷',
+    '公冶', '宗政', '濮牛', '淳于', '单于', '鲜于', '闾丘', '司徒', '司空', '亓官',
+    '司寇', '仉督', '子车', '颛孙', '端木', '巫马', '公西', '漆雕', '乐正', '壤驷'
+  ]);
+  
+  const compoundSurname1 = compoundSurnames.has(name1.substring(0, 2));
+  const compoundSurname2 = compoundSurnames.has(name2.substring(0, 2));
+  
+  if (compoundSurname1 && !compoundSurname2) {
+    return true;
+  }
+  if (!compoundSurname1 && compoundSurname2) {
+    return false;
+  }
+  
+  if (compoundSurname1 && compoundSurname2) {
+    return name1.length > name2.length;
+  }
+  
+  const commonSurnames = new Set([
+    '王', '李', '张', '刘', '陈', '杨', '赵', '黄', '周', '吴',
+    '徐', '孙', '马', '朱', '胡', '郭', '何', '高', '林', '罗',
+    '郑', '梁', '谢', '宋', '唐', '许', '韩', '冯', '邓', '曹',
+    '彭', '曾', '肖', '田', '董', '袁', '潘', '于', '蒋', '蔡',
+    '余', '杜', '叶', '程', '苏', '魏', '吕', '丁', '任', '沈',
+    '姚', '卢', '姜', '崔', '钟', '谭', '陆', '汪', '范', '金',
+    '韦', '贾', '夏', '贺', '钱', '龚', '河', '侯', '江', '童',
+    '颜', '梅', '盛', '雷', '葛', '游', '龙', '关', '苗', '华',
+    '俞', '顾', '邵', '孟', '万', '秦', '白', '方', '武', '管',
+    '柴', '莫', '易', '连', '萧', '冷', '屈', '敖', '明', '丘',
+    '应', '甄', '封', '羿', '储', '邬', '束', '康', '元', '思',
+    '景', '善', '卿', '来', '党', '翟', '陶', '水', '窦', '章',
+    '云', '鲁', '韦', '芮', '糜', '松', '井', '段', '富', '巫',
+    '乌', '焦', '巴', '弓', '谷', '车', '侯', '宓', '蓬', '全',
+    '郗', '班', '仰', '秋', '仲', '伊', '宫', '宁', '仇', '栾',
+    '暴', '甘', '钭', '厉', '戎', '祖', '符', '詹', '叶', '幸',
+    '司', '韶', '郜', '黎', '蓟', '薄', '印', '宿', '怀', '蒲',
+    '台', '从', '鄂', '索', '咸', '籍', '赖', '卓', '蔺', '屠',
+    '蒙', '池', '乔', '阴', '郁', '胥', '能', '苍', '双', '闻',
+    '莘', '贡', '劳', '逄', '姬', '申', '扶', '堵', '冉', '宰',
+    '雍', '桑', '寿', '通', '扁', '洪', '包', '佘', '邱', '骆',
+    '靖', '言', '爱', '阳', '佟', '庆', '晋', '阎', '蔚', '过',
+    '校', '敬', '召', '北', '门', '纳', '果', '干', '楼'
+  ]);
+  
+  const name1HasSurname = commonSurnames.has(name1.charAt(0));
+  const name2HasSurname = commonSurnames.has(name2.charAt(0));
+  
+  if (name1HasSurname && !name2HasSurname) {
+    return true;
+  }
+  
+  // 规则3：看起来像昵称的名字（如带数字、叠字、形容词等）不那么正式
+  const nicknamePatterns = [
+    /^[一二三四五六七八九十]+[\u4e00-\u9fa5]+$/, // 如"二愣子"
+    /^[\u4e00-\u9fa5]{2,3}[子|儿|哥|姐|弟|妹|爷|奶|叔|婶]$/, // 如"愣子"
+    /^[小|老|大][\u4e00-\u9fa5]+$/, // 如"小立"
+    /^[\u4e00-\u9fa5]+[\u4e00-\u9fa5]+$/, // 叠字昵称
+  ];
+  
+  const isName1Nickname = nicknamePatterns.some(pattern => pattern.test(name1));
+  const isName2Nickname = nicknamePatterns.some(pattern => pattern.test(name2));
+  
+  if (!isName1Nickname && isName2Nickname) {
+    return true;
+  }
+  
+  // 规则4：更长的名字可能更正式
+  if (name1.length > name2.length) {
+    return true;
+  }
+  
+  return false;
 }
 
 const GENERIC_PERSON_WORDS = new Set([
