@@ -686,21 +686,21 @@ function convertEventToMonogatari(event: VNEvent, sceneNameToIndex: Record<strin
   } else if (event.monologue) {
     return `'centered ${escapeString(event.monologue)}'`;
   } else if (event.action) {
-    return `'show message ${escapeString(event.action)}'`;
+    return `'centered ${escapeString(event.action)}'`;
   } else if (event.choice && event.options) {
-    const options = event.options.map(opt => {
+    const optionsObj: Record<string, { Text: string; Do: string }> = {};
+    event.options.forEach((opt, idx) => {
       const next = (opt.next || 'End').replace('jump ', '').trim() || 'Start';
-      return `\t\t\t'opt_${Math.random().toString(36).substr(2, 6)}': {
-\t\t\t\tText: '${escapeString(opt.text)}',
-\t\t\t\tDo: 'jump ${next}'
-\t\t\t}`;
+      const key = `option_${idx + 1}`;
+      optionsObj[key] = {
+        Text: opt.text,
+        Do: `jump ${next}`
+      };
+    });
+    const optionsContent = Object.entries(optionsObj).map(([key, value]) => {
+      return `\t\t\t\t'${key}': {\n\t\t\t\t\t'Text': '${escapeString(value.Text)}',\n\t\t\t\t\t'Do': '${value.Do}'\n\t\t\t\t}`;
     }).join(',\n');
-    return `{'Choice': {
-\t\t\tDialog: '${escapeString(event.choice)}',
-\t\t\tchoices: [
-\t\t\t${options}
-\t\t\t]
-\t\t}}`;
+    return `{'Choice': {\n\t\t\t'Text': '${escapeString(event.choice)}',\n\t\t\t${optionsContent}\n\t\t}}`;
   } else if (event.end) {
     return `'end ${escapeString(event.end)}'`;
   }
