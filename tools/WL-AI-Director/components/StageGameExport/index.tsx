@@ -5,7 +5,7 @@ import { useAlert } from '../GlobalAlert';
 import { logger, LogCategory } from '../../services/logger';
 import { convertRawScriptToVNScript, convertAllChaptersToVNScript } from '../../services/vnScriptConverter';
 import { generateVNScriptFromShots } from '../../services/vnScriptConverter';
-import { downloadMonogatariScript, openGamePreview, downloadCompleteGame, downloadCompleteGameWithAssets } from '../../utils/monogatariExport';
+import { downloadMonogatariScript, openGamePreviewWithLocalEngine, downloadCompleteGame, downloadCompleteGameWithAssets, exportGameToLocal, exportGameWithAssetsToLocal } from '../../utils/monogatariExport';
 import { extractGameAssets } from '../../services/vnScriptConverter';
 
 interface StageGameExportProps {
@@ -17,48 +17,7 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
   const { showAlert } = useAlert();
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
 
-  const handleQuickConvert = () => {
-    if (!project.novelData) {
-      showAlert('请先在剧本阶段导入小说', { type: 'warning' });
-      return;
-    }
 
-    logger.debug(LogCategory.UI, '⚡ 开始快速转换剧本...');
-
-    try {
-      let scriptData;
-
-      if (project.novelData.chapters && project.novelData.chapters.length > 0) {
-        scriptData = convertAllChaptersToVNScript(
-          project.novelData.chapters,
-          project.novelData.characters,
-          project.novelData.scenes
-        );
-      } else if (project.rawScript) {
-        scriptData = convertRawScriptToVNScript(
-          project.rawScript,
-          project.novelData.characters,
-          project.novelData.scenes
-        );
-      } else {
-        showAlert('没有可转换的内容', { type: 'warning' });
-        return;
-      }
-
-      updateProject({
-        novelData: {
-          ...project.novelData,
-          vnScript: scriptData
-        }
-      });
-
-      logger.debug(LogCategory.UI, `✅ 快速转换完成: ${Object.keys(scriptData.scripts).length} 个章节剧本`);
-      showAlert(`快速转换完成！共 ${Object.keys(scriptData.scripts).length} 个章节`, { type: 'success' });
-    } catch (error) {
-      logger.error(LogCategory.UI, '快速转换失败:', error);
-      showAlert('快速转换失败，请重试', { type: 'error' });
-    }
-  };
 
   const handleAIGenerateScript = async () => {
     if (!project.scriptData) {
@@ -119,14 +78,14 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
     }
   };
 
-  const handlePreviewGame = () => {
+  const handlePreviewGame = async () => {
     if (!project.novelData?.vnScript) {
       showAlert('请先生成游戏剧本', { type: 'warning' });
       return;
     }
 
     try {
-      openGamePreview(project.novelData.vnScript);
+      await openGamePreviewWithLocalEngine(project.novelData.vnScript, project.title || '视觉小说');
       logger.info(LogCategory.UI, '🎮 游戏预览已打开');
     } catch (error) {
       logger.error(LogCategory.UI, '预览失败:', error);
@@ -187,6 +146,67 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
     }
   };
 
+  const handleExportToLocal = async () => {
+    if (!project.novelData?.vnScript) {
+      showAlert('请先生成游戏剧本', { type: 'warning' });
+      return;
+    }
+
+    const hasScriptData = project.scriptData && project.scriptData.characters && project.scriptData.characters.length > 0;
+    const hasScriptDataCharacters = hasScriptData && project.scriptData.characters.length > 0;
+    const hasScriptDataScenes = hasScriptData && project.scriptData.scenes && project.scriptData.scenes.length > 0;
+    const hasShots = project.shots && project.shots.length > 0;
+
+    let assets = null;
+    if (hasScriptDataCharacters && hasScriptDataScenes && hasShots) {
+      assets = await extractGameAssets(
+        project.shots,
+        project.scriptData!.characters,
+        project.scriptData!.scenes
+      );
+      
+      if (assets.stats.totalImages === 0) {
+        showAlert('没有可导出的图片资源', { type: 'warning' });
+      }
+    }
+
+    if (assets && assets.stats.totalImages > 0) {
+      const result = await exportGameWithAssetsToLocal(
+        project.novelData.vnScript,
+        assets,
+        project.title || 'game',
+        (message, percent) => {
+          logger.debug(LogCategory.UI, `导出进度: ${percent}% - ${message}`);
+        }
+      );
+      
+      if (result.success) {
+        logger.info(LogCategory.UI, `✅ 游戏已保存到本地（含 ${assets.stats.totalImages} 张图片）`);
+        showAlert(`游戏已保存到本地！含 ${assets.stats.totalImages} 张图片`, { type: 'success' });
+      } else {
+        logger.warn(LogCategory.UI, `导出取消: ${result.error}`);
+        if (result.error !== '用户取消了保存') {
+          showAlert(`导出失败: ${result.error}`, { type: 'error' });
+        }
+      }
+    } else {
+      const result = await exportGameToLocal(
+        project.novelData.vnScript,
+        project.title || 'game'
+      );
+      
+      if (result.success) {
+        logger.info(LogCategory.UI, '✅ 游戏已保存到本地');
+        showAlert('游戏已保存到本地！', { type: 'success' });
+      } else {
+        logger.warn(LogCategory.UI, `导出取消: ${result.error}`);
+        if (result.error !== '用户取消了保存') {
+          showAlert(`导出失败: ${result.error}`, { type: 'error' });
+        }
+      }
+    }
+  };
+
   const hasNovelData = project.novelData && project.novelData.sourceText;
   const hasChapters = project.novelData?.chapters && project.novelData.chapters.length > 0;
   const hasCharacters = project.novelData?.characters && project.novelData.characters.length > 0;
@@ -241,51 +261,6 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
             </div>
           </div>
 
-          {/* 快速转换区域 */}
-          <div className="bg-[var(--bg-surface)] rounded-lg p-6 border border-[var(--border-primary)]">
-            <h3 className="text-base font-medium text-[var(--text-primary)] mb-4 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-yellow-500" />
-              快速转换（无需 AI）
-            </h3>
-            <p className="text-sm text-[var(--text-tertiary)] mb-4">
-              直接将小说文本转换为游戏剧本，无需调用 AI。适用于没有 AI API Key 或需要快速预览的场景。
-            </p>
-            
-            {hasVnScript ? (
-              <button
-                onClick={handleAIGenerateScript}
-                disabled={isGeneratingScript}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isGeneratingScript ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    重新生成中...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    重新生成剧本
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                onClick={handleQuickConvert}
-                disabled={!hasNovelData}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-yellow-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Zap className="w-5 h-5" />
-                开始快速转换
-              </button>
-            )}
-
-            {!hasNovelData && (
-              <p className="text-xs text-[var(--text-muted)] mt-2">
-                请先在「剧本与故事」阶段导入小说
-              </p>
-            )}
-          </div>
 
           {/* AI 生成剧本区域 */}
           <div className="bg-[var(--bg-surface)] rounded-lg p-6 border border-[var(--border-primary)]">
@@ -381,6 +356,14 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
                 >
                   <Download className="w-5 h-5" />
                   导出完整游戏
+                </button>
+                
+                <button
+                  onClick={handleExportToLocal}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-orange-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
+                >
+                  <FileText className="w-5 h-5" />
+                  保存到本地
                 </button>
               </div>
             </div>

@@ -1146,7 +1146,19 @@ export function generateStandaloneHtml(vnScript: VisualNovelScriptData, projectN
     </script>
     <script src="https://cdn.jsdelivr.net/npm/monogatari@4.0.0/dist/monogatari.js"></script>
     <script>
+    // CDN 版本是 UMD 模块，需要通过 default 获取实例
+    const monogatari = Monogatari.default;
+    </script>
+    <script>
     ${scriptContent}
+    </script>
+    <script>
+    // 初始化引擎
+    monogatari.init('#monogatari').then(() => {
+        console.log('Monogatari 引擎初始化完成');
+    }).catch(err => {
+        console.error('Monogatari 初始化失败:', err);
+    });
     </script>
 </body>
 </html>`;
@@ -1157,6 +1169,114 @@ export function openGamePreview(vnScript: VisualNovelScriptData, projectName: st
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank');
+}
+
+export async function openGamePreviewWithLocalEngine(
+  vnScript: VisualNovelScriptData, 
+  projectName: string = 'my-visual-novel'
+): Promise<void> {
+  const MONOGATARI_BASE = '/templates/monogatari';
+  
+  async function fetchFile(path: string): Promise<string> {
+    const response = await fetch(`${MONOGATARI_BASE}/${path}`);
+    if (!response.ok) throw new Error(`Failed to fetch ${path}`);
+    return response.text();
+  }
+
+  try {
+    const [debugJs, monogatariJs, scriptContent] = await Promise.all([
+      fetchFile('engine/debug/debug.js'),
+      fetchFile('engine/core/monogatari.js'),
+      Promise.resolve(exportToMonogatari(vnScript))
+    ]);
+
+    const html = generatePreviewHtmlWithLocalEngine({
+      projectName,
+      debugJs,
+      monogatariJs,
+      scriptContent
+    });
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  } catch (error) {
+    console.error('生成预览失败:', error);
+    throw error;
+  }
+}
+
+interface PreviewHtmlOptions {
+  projectName: string;
+  debugJs: string;
+  monogatariJs: string;
+  scriptContent: string;
+}
+
+function generatePreviewHtmlWithLocalEngine(options: PreviewHtmlOptions): string {
+  const { projectName, debugJs, monogatariJs, scriptContent } = options;
+  
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${projectName}</title>
+    <link rel="stylesheet" href="/templates/monogatari/engine/core/monogatari.css">
+    <link rel="stylesheet" href="/templates/monogatari/style/main.css">
+    <style>
+        body { margin: 0; padding: 0; background: #0a0a12; }
+        #monogatari { width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="monogatari">
+        <visual-novel>
+            <loading-screen></loading-screen>
+            <main-screen><main-menu></main-menu></main-screen>
+            <game-screen>
+                <dialog-log></dialog-log>
+                <text-box></text-box>
+                <quick-menu></quick-menu>
+            </game-screen>
+            <save-screen></save-screen>
+            <load-screen></load-screen>
+            <settings-screen></settings-screen>
+        </visual-novel>
+    </div>
+    
+    <script>
+    const MonogatariConfig = {
+        app: { name: '${projectName}', version: '1.0.0' },
+        settings: { 
+            language: 'schinese',
+            ShowMainScreen: true,
+            Label: 'Start'
+        }
+    };
+    </script>
+    
+    <script>
+    ${debugJs}
+    </script>
+    <script>
+    ${monogatariJs}
+    </script>
+    <script>
+    const monogatari = Monogatari.default;
+    </script>
+    <script>
+    ${scriptContent}
+    </script>
+    <script>
+    monogatari.init('#monogatari').then(() => {
+        console.log('游戏预览已启动');
+    }).catch(err => {
+        console.error('初始化失败:', err);
+    });
+    </script>
+</body>
+</html>`;
 }
 
 const MONOGATARI_BASE = '/templates/monogatari';
@@ -1426,4 +1546,71 @@ export async function downloadCompleteGameWithAssets(
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+export async function exportGameToLocal(
+  vnScript: VisualNovelScriptData,
+  projectName: string = 'my-visual-novel',
+  onProgress?: (message: string, percent: number) => void
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  if (!('showSaveFilePicker' in window)) {
+    return { success: false, error: '当前浏览器不支持文件保存功能，请使用 Chrome/Edge 浏览器' };
+  }
+
+  try {
+    const blob = await generateCompleteGameZip(vnScript, projectName, onProgress);
+    
+    const fileHandle = await (window as any).showSaveFilePicker({
+      suggestedName: `${projectName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')}.zip`,
+      types: [{
+        description: 'ZIP 压缩文件',
+        accept: { 'application/zip': ['.zip'] }
+      }]
+    });
+    
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    
+    return { success: true, path: fileHandle.name };
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return { success: false, error: '用户取消了保存' };
+    }
+    return { success: false, error: error.message };
+  }
+}
+
+export async function exportGameWithAssetsToLocal(
+  vnScript: VisualNovelScriptData,
+  assets: GameAssets,
+  projectName: string = 'my-visual-novel',
+  onProgress?: (message: string, percent: number) => void
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  if (!('showSaveFilePicker' in window)) {
+    return { success: false, error: '当前浏览器不支持文件保存功能，请使用 Chrome/Edge 浏览器' };
+  }
+
+  try {
+    const blob = await generateCompleteGameZipWithAssets(vnScript, assets, projectName, onProgress);
+    
+    const fileHandle = await (window as any).showSaveFilePicker({
+      suggestedName: `${projectName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')}.zip`,
+      types: [{
+        description: 'ZIP 压缩文件',
+        accept: { 'application/zip': ['.zip'] }
+      }]
+    });
+    
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    
+    return { success: true, path: fileHandle.name };
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return { success: false, error: '用户取消了保存' };
+    }
+    return { success: false, error: error.message };
+  }
 }

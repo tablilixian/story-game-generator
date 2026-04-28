@@ -16,7 +16,7 @@ import { analyzeAllChapters } from '../../services/novelAnalysisService';
 import { generateAllVNScripts } from '../../services/vnScriptService';
 import { convertRawScriptToVNScript, convertAllChaptersToVNScript } from '../../services/vnScriptConverter';
 import { convertNovelToScriptData } from '../../services/novelToScriptConverter';
-import { downloadMonogatariScript, openGamePreview, downloadCompleteGame } from '../../utils/monogatariExport';
+import { downloadMonogatariScript, openGamePreviewWithLocalEngine, downloadCompleteGame } from '../../utils/monogatariExport';
 
 // 获取默认的对话模型 ID：优先使用注册中心的激活模型，兜底到常量
 const getDefaultChatModelId = (): string => {
@@ -327,7 +327,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
     }
   };
 
-  const handlePreviewGame = () => {
+  const handlePreviewGame = async () => {
     if (!project.novelData || !project.novelData.vnScript) {
       showAlert('请先生成剧本', { type: 'warning' });
       return;
@@ -335,7 +335,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
     
     try {
       const projectName = project.title || '视觉小说';
-      openGamePreview(project.novelData.vnScript, projectName);
+      await openGamePreviewWithLocalEngine(project.novelData.vnScript, projectName);
       logger.info(LogCategory.UI, '🎮 游戏预览已打开');
     } catch (error) {
       logger.error(LogCategory.UI, '预览失败:', error);
