@@ -14,6 +14,8 @@ import NovelImportPanel from './NovelImportPanel';
 import { parseNovelToChapters } from './novelParser';
 import { analyzeAllChapters } from '../../services/novelAnalysisService';
 import { generateAllVNScripts } from '../../services/vnScriptService';
+import { convertRawScriptToVNScript, convertAllChaptersToVNScript } from '../../services/vnScriptConverter';
+import { convertNovelToScriptData } from '../../services/novelToScriptConverter';
 import { downloadMonogatariScript, openGamePreview, downloadCompleteGame } from '../../utils/monogatariExport';
 
 // 获取默认的对话模型 ID：优先使用注册中心的激活模型，兜底到常量
@@ -53,6 +55,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
   const [isContinuing, setIsContinuing] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [isApplyingToScript, setIsApplyingToScript] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [processingMessage, setProcessingMessage] = useState('');
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
@@ -211,6 +214,100 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
       showAlert('剧本生成失败，请重试', { type: 'error' });
     } finally {
       setIsGeneratingScript(false);
+    }
+  };
+
+  const handleQuickConvert = () => {
+    if (!project.novelData) {
+      showAlert('请先导入小说', { type: 'warning' });
+      return;
+    }
+
+    logger.debug(LogCategory.UI, '⚡ 开始快速转换剧本...');
+
+    try {
+      let scriptData;
+
+      if (project.novelData.chapters && project.novelData.chapters.length > 0) {
+        scriptData = convertAllChaptersToVNScript(
+          project.novelData.chapters,
+          project.novelData.characters,
+          project.novelData.scenes
+        );
+      } else if (project.rawScript) {
+        scriptData = convertRawScriptToVNScript(
+          project.rawScript,
+          project.novelData.characters,
+          project.novelData.scenes
+        );
+      } else {
+        showAlert('没有可转换的内容', { type: 'warning' });
+        return;
+      }
+
+      updateProject({
+        novelData: {
+          ...project.novelData,
+          vnScript: scriptData
+        }
+      });
+
+      logger.debug(LogCategory.UI, `✅ 快速转换完成: ${Object.keys(scriptData.scripts).length} 个章节剧本`);
+      showAlert(`快速转换完成！共 ${Object.keys(scriptData.scripts).length} 个章节`, { type: 'success' });
+
+      setActiveTab('story');
+    } catch (error) {
+      logger.error(LogCategory.UI, '快速转换失败:', error);
+      showAlert('快速转换失败，请重试', { type: 'error' });
+    }
+  };
+
+  const handleApplyToScript = async () => {
+    if (!project.novelData || !project.novelData.characters.length || !project.novelData.scenes.length) {
+      showAlert('请先完成角色和场景提取', { type: 'warning' });
+      return;
+    }
+
+    setIsApplyingToScript(true);
+    logger.debug(LogCategory.AI, '🔄 开始应用角色和场景到剧本编辑...');
+
+    try {
+      const result = convertNovelToScriptData(project.novelData);
+
+      if (result.errors.length > 0) {
+        logger.warn(LogCategory.AI, `⚠️ 转换过程中有 ${result.errors.length} 个错误`);
+        result.errors.forEach(err => {
+          logger.warn(LogCategory.AI, `  - ${err.type}: ${err.message}`);
+        });
+      }
+
+      const existingScriptData = project.scriptData || {
+        title: project.title || '未命名项目',
+        genre: '未知',
+        logline: '',
+        characters: [],
+        scenes: [],
+        props: [],
+        storyParagraphs: []
+      };
+
+      updateProject({
+        scriptData: {
+          ...existingScriptData,
+          characters: [...(existingScriptData.characters || []), ...result.characters],
+          scenes: [...(existingScriptData.scenes || []), ...result.scenes]
+        }
+      });
+
+      logger.debug(LogCategory.AI, `✅ 应用完成: ${result.characters.length} 个角色, ${result.scenes.length} 个场景`);
+      showAlert(`已添加 ${result.characters.length} 个角色和 ${result.scenes.length} 个场景到剧本编辑`, { type: 'success' });
+
+      setActiveTab('story');
+    } catch (error) {
+      logger.error(LogCategory.AI, '应用失败:', error);
+      showAlert('应用失败，请重试', { type: 'error' });
+    } finally {
+      setIsApplyingToScript(false);
     }
   };
 
@@ -810,11 +907,14 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
             onImport={handleNovelImport}
             onAnalyzeChapters={handleAnalyzeChapters}
             onGenerateScript={handleGenerateScript}
+            onQuickConvert={handleQuickConvert}
+            onApplyToScript={handleApplyToScript}
             onExportMonogatari={handleExportMonogatari}
             onPreviewGame={handlePreviewGame}
             onExportCompleteGame={handleExportCompleteGame}
             isAnalyzing={project.novelData?.isAnalyzing || false}
             isGeneratingScript={isGeneratingScript}
+            isApplyingToScript={isApplyingToScript}
           />
         </div>
       ) : activeTab === 'story' ? (

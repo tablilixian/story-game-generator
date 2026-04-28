@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { FileText, Upload, Loader2, AlertCircle, CheckCircle, BookOpen, Play, X, RefreshCw, Download } from 'lucide-react';
+import { FileText, Upload, Loader2, AlertCircle, CheckCircle, BookOpen, Play, X, RefreshCw, Download, Users, MapPin, Zap } from 'lucide-react';
 import { NovelData, NovelChapter, NovelCharacter, NovelScene } from '../../types';
 import { useAlert } from '../GlobalAlert';
 import { logger, LogCategory } from '../../services/logger';
@@ -10,11 +10,14 @@ interface NovelImportPanelProps {
   onImport: (text: string) => void;
   onAnalyzeChapters: () => void;
   onGenerateScript: () => void;
+  onQuickConvert?: () => void;
+  onApplyToScript?: () => void;
   onExportMonogatari: () => void;
   onPreviewGame: () => void;
   onExportCompleteGame: () => void;
   isAnalyzing: boolean;
   isGeneratingScript: boolean;
+  isApplyingToScript?: boolean;
 }
 
 const NovelImportPanel: React.FC<NovelImportPanelProps> = ({
@@ -22,11 +25,14 @@ const NovelImportPanel: React.FC<NovelImportPanelProps> = ({
   onImport,
   onAnalyzeChapters,
   onGenerateScript,
+  onQuickConvert,
+  onApplyToScript,
   onExportMonogatari,
   onPreviewGame,
   onExportCompleteGame,
   isAnalyzing,
-  isGeneratingScript
+  isGeneratingScript,
+  isApplyingToScript
 }) => {
   const { showAlert } = useAlert();
   const [novelText, setNovelText] = useState('');
@@ -222,6 +228,40 @@ const NovelImportPanel: React.FC<NovelImportPanelProps> = ({
                   )}
                 </button>
               </div>
+
+              {/* 应用到角色/场景按钮 */}
+              {novelData.characters && novelData.characters.length > 0 && novelData.scenes && novelData.scenes.length > 0 && (
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={onApplyToScript}
+                    disabled={isApplyingToScript}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-orange-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    {isApplyingToScript ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        应用中...
+                      </>
+                    ) : (
+                      <>
+                        <Users className="w-4 h-4" />
+                        应用到角色/场景
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* 快速转换按钮（无需AI） */}
+              {onQuickConvert && !novelData.vnScript && (
+                <button
+                  onClick={onQuickConvert}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-yellow-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
+                >
+                  <Zap className="w-4 h-4" />
+                  快速转换（无需AI）
+                </button>
+              )}
 
               {/* 生成剧本按钮 */}
               {novelData.characters && novelData.characters.length > 0 && novelData.scenes && novelData.scenes.length > 0 && !novelData.vnScript && (

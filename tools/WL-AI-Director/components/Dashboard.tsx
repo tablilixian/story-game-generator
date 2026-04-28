@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from '../src/components/LanguageSwitcher';
 import qrCodeImg from '../images/qrcode.jpg';
 import DebugExportModal from './DebugExportModal';
+import NovelSplitModal from './NovelSplitModal';
 import logger, { LogCategory } from '@/services/logger';
 
 interface Props {
@@ -32,6 +33,7 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
   const [showLibraryModal, setShowLibraryModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showDebugModal, setShowDebugModal] = useState(false);
+  const [showSplitModal, setShowSplitModal] = useState(false);
   const [isDataExporting, setIsDataExporting] = useState(false);
   const [isDataImporting, setIsDataImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -283,7 +285,7 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
               <Settings className="w-4 h-4" />
               <span className="font-medium text-xs tracking-widest uppercase">系统设置</span>
             </button>
-            {user && (
+            {/* {user && (
               <div className="flex items-center gap-2 px-3 py-2 border border-[var(--border-primary)] bg-[var(--bg-surface)]">
                 <User className="w-4 h-4 text-[var(--text-tertiary)]" />
                 <span className="text-xs text-[var(--text-tertiary)] max-w-[150px] truncate">
@@ -297,7 +299,7 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
-            )}
+            )} */}
             <button
               onClick={toggleTheme}
               className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
@@ -313,6 +315,13 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
             >
               <Plus className="w-4 h-4" />
               <span className="font-bold text-xs tracking-widest uppercase">新建项目</span>
+            </button>
+            <button 
+              onClick={() => setShowSplitModal(true)}
+              className="group flex items-center gap-3 px-6 py-3 bg-[var(--btn-secondary-bg)] text-[var(--btn-secondary-text)] hover:bg-[var(--btn-secondary-hover)] transition-colors"
+            >
+              <Folder className="w-4 h-4" />
+              <span className="font-bold text-xs tracking-widest uppercase">拆分小说</span>
             </button>
           </div>
         </header>
@@ -393,7 +402,23 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
 
                      <div className="flex-1">
                         <Folder className="w-8 h-8 text-[var(--text-muted)] mb-6 group-hover:text-[var(--text-tertiary)] transition-colors" />
-                        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-2 line-clamp-1 tracking-wide">{proj.title}</h3>
+                        {proj.chapterOrder ? (
+                          <div className="mb-2">
+                            <span className="text-xs font-bold text-[var(--accent)]">
+                              第{proj.chapterOrder}章
+                            </span>
+                            <span className="text-sm font-bold text-[var(--text-primary)] ml-1">
+                              {proj.chapterTitle || proj.title}
+                            </span>
+                          </div>
+                        ) : (
+                          <h3 className="text-sm font-bold text-[var(--text-primary)] mb-2 line-clamp-1 tracking-wide">{proj.title}</h3>
+                        )}
+                        {proj.chapterOrder && proj.novelTitle && (
+                          <p className="text-[10px] text-[var(--text-muted)] mb-2">
+                            来自：{proj.novelTitle}
+                          </p>
+                        )}
                         <div className="flex flex-wrap gap-2 mb-4">
                             <span className="text-[9px] font-mono text-[var(--text-tertiary)] border border-[var(--border-primary)] px-1.5 py-0.5 uppercase tracking-wider">
                               {proj.stage === 'script' ? '剧本阶段' : 
@@ -566,6 +591,13 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
 
       {/* Debug Export Modal */}
       <DebugExportModal isOpen={showDebugModal} onClose={() => setShowDebugModal(false)} />
+      
+      {/* Novel Split Modal */}
+      <NovelSplitModal 
+        isOpen={showSplitModal} 
+        onClose={() => setShowSplitModal(false)}
+        onRefresh={loadProjects}
+      />
     </div>
   );
 };

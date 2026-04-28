@@ -6,6 +6,7 @@ import StageDirector from './components/StageDirector';
 import StageExport from './components/StageExport';
 import StagePrompts from './components/StagePrompts';
 import StageCanvas from './components/StageCanvas';
+import StageGameExport from './components/StageGameExport';
 import VideoEditor from './src/components/VideoEditor';
 import { canvasIntegrationService } from './src/modules/canvas/services/canvasIntegrationService';
 import Dashboard from './components/Dashboard';
@@ -342,7 +343,7 @@ function App() {
   };
 
   // Set stage
-  const setStage = async (stage: 'script' | 'assets' | 'director' | 'editor' | 'export' | 'prompts' | 'canvas') => {
+  const setStage = async (stage: 'script' | 'assets' | 'director' | 'editor' | 'game' | 'export' | 'prompts' | 'canvas') => {
     if (project) {
       await canvasIntegrationService.setProjectId(project.id);
     }
@@ -503,6 +504,8 @@ function App() {
         return <StagePrompts project={project} updateProject={updateProject} />;
       case 'canvas':
         return <StageCanvas project={project} updateProject={updateProject} />;
+      case 'game':
+        return <StageGameExport project={project} updateProject={updateProject} />;
       default:
         return <div className="text-[var(--text-primary)]">未知阶段</div>;
     }

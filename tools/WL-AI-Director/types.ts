@@ -300,7 +300,7 @@ export interface ProjectState {
   createdAt: number;
   lastModified: number;
   version: number;
-  stage: 'script' | 'assets' | 'director' | 'editor' | 'export' | 'prompts' | 'canvas';
+  stage: 'script' | 'assets' | 'director' | 'editor' | 'game' | 'export' | 'prompts' | 'canvas';
   
   // Script Phase Data
   rawScript: string;
@@ -313,6 +313,11 @@ export interface ProjectState {
   shots: Shot[];
   isParsingScript: boolean;
   renderLogs: RenderLog[]; // History of all API calls for this project
+
+  // Novel Split Data (小说拆分)
+  novelTitle?: string; // 原始小说名称
+  chapterOrder?: number; // 章节编号
+  chapterTitle?: string; // 章节标题（不含编号）
 
   // Novel Phase Data (小说转视觉小说)
   novelData?: NovelData | null;

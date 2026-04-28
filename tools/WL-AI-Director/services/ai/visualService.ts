@@ -410,13 +410,34 @@ Generate ONE square image with a perfect3x3 grid of 9 equal-sized panels.`;
 // 视觉提示词生成
 // ============================================
 
+const DEFAULT_ART_DIRECTION: ArtDirection = {
+  colorPalette: {
+    primary: '根据视觉风格自动确定',
+    secondary: '根据视觉风格自动确定',
+    accent: '根据视觉风格自动确定',
+    skinTones: '根据视觉风格自动确定',
+    saturation: '根据视觉风格自动确定',
+    temperature: '根据视觉风格自动确定',
+  },
+  characterDesignRules: {
+    proportions: '根据视觉风格自动确定',
+    eyeStyle: '根据视觉风格自动确定',
+    lineWeight: '根据视觉风格自动确定',
+    detailLevel: '根据视觉风格自动确定',
+  },
+  lightingStyle: '根据视觉风格自动确定',
+  textureStyle: '根据视觉风格自动确定',
+  moodKeywords: [],
+  consistencyAnchors: '遵循基本的视觉质量标准',
+};
+
 /**
  * 生成角色视觉提示词
  * 基于角色信息和美术指导，生成详细的视觉描述
  */
 export const generateCharacterVisualPrompt = async (
   character: Character,
-  artDirection: ArtDirection,
+  artDirection: ArtDirection | undefined,
   visualStyle: string = 'anime',
   language: string = '中文',
   model?: string
@@ -425,6 +446,7 @@ export const generateCharacterVisualPrompt = async (
   logger.debug(LogCategory.AI, `🎨 generateCharacterVisualPrompt 调用 - 生成角色视觉提示词，使用模型: ${resolvedModel}`);
   logScriptProgress('正在生成角色视觉提示词...');
 
+  const effectiveArtDirection = artDirection || DEFAULT_ART_DIRECTION;
   const stylePrompt = getStylePrompt(visualStyle);
 
   const prompt = `You are a world-class visual prompt engineer for ${visualStyle} productions.
@@ -443,28 +465,28 @@ Your task is to create a detailed visual prompt for generating a character image
 【微动作特征】角色必须携带其微动作特征：${character.microAction?.polished || character.microAction?.original || '无特殊微动作'}
 
 ## Art Direction Guidelines
-${artDirection.consistencyAnchors}
+${effectiveArtDirection.consistencyAnchors}
 
 ## Character Design Rules
-${artDirection.characterDesignRules.proportions}
-${artDirection.characterDesignRules.eyeStyle}
-${artDirection.characterDesignRules.lineWeight}
-${artDirection.characterDesignRules.detailLevel}
+${effectiveArtDirection.characterDesignRules.proportions}
+${effectiveArtDirection.characterDesignRules.eyeStyle}
+${effectiveArtDirection.characterDesignRules.lineWeight}
+${effectiveArtDirection.characterDesignRules.detailLevel}
 
 ## Color Palette Guidelines
-- Primary: ${artDirection.colorPalette.primary}
-- Secondary: ${artDirection.colorPalette.secondary}
-- Accent: ${artDirection.colorPalette.accent}
-- Skin Tones: ${artDirection.colorPalette.skinTones}
-- Saturation: ${artDirection.colorPalette.saturation}
-- Temperature: ${artDirection.colorPalette.temperature}
+- Primary: ${effectiveArtDirection.colorPalette.primary}
+- Secondary: ${effectiveArtDirection.colorPalette.secondary}
+- Accent: ${effectiveArtDirection.colorPalette.accent}
+- Skin Tones: ${effectiveArtDirection.colorPalette.skinTones}
+- Saturation: ${effectiveArtDirection.colorPalette.saturation}
+- Temperature: ${effectiveArtDirection.colorPalette.temperature}
 
 ## Lighting & Texture
-- Lighting Style: ${artDirection.lightingStyle}
-- Texture Style: ${artDirection.textureStyle}
+- Lighting Style: ${effectiveArtDirection.lightingStyle}
+- Texture Style: ${effectiveArtDirection.textureStyle}
 
 ## Mood Keywords
-${artDirection.moodKeywords.join(', ')}
+${effectiveArtDirection.moodKeywords.join(', ')}
 
 ## Your Task
 Create a comprehensive visual prompt that will be used to generate a character image.
@@ -516,7 +538,7 @@ Output ONLY the visual prompt (no explanations, no JSON format). Length: 200-400
  */
 export const generateSceneVisualPrompt = async (
   scene: Scene,
-  artDirection: ArtDirection,
+  artDirection: ArtDirection | undefined,
   language: string = '中文',
   model?: string
 ): Promise<string> => {
@@ -524,6 +546,7 @@ export const generateSceneVisualPrompt = async (
   logger.debug(LogCategory.AI, `🎨 generateSceneVisualPrompt 调用 - 生成场景视觉提示词，使用模型: ${resolvedModel}`);
   logScriptProgress('正在生成场景视觉提示词...');
 
+  const effectiveArtDirection = artDirection || DEFAULT_ART_DIRECTION;
   const stylePrompt = getStylePrompt('anime');
 
   const prompt = `You are a world-class visual prompt engineer for anime productions.
@@ -537,28 +560,28 @@ Your task is to create a detailed visual prompt for generating a scene/environme
 - Base Visual Prompt: ${scene.visualPrompt || 'Not provided'}
 
 ## Art Direction Guidelines
-${artDirection.consistencyAnchors}
+${effectiveArtDirection.consistencyAnchors}
 
 ## Scene Design Rules
-${artDirection.characterDesignRules.proportions}
-${artDirection.characterDesignRules.eyeStyle}
-${artDirection.characterDesignRules.lineWeight}
-${artDirection.characterDesignRules.detailLevel}
+${effectiveArtDirection.characterDesignRules.proportions}
+${effectiveArtDirection.characterDesignRules.eyeStyle}
+${effectiveArtDirection.characterDesignRules.lineWeight}
+${effectiveArtDirection.characterDesignRules.detailLevel}
 
 ## Color Palette Guidelines
-- Primary: ${artDirection.colorPalette.primary}
-- Secondary: ${artDirection.colorPalette.secondary}
-- Accent: ${artDirection.colorPalette.accent}
-- Skin Tones: ${artDirection.colorPalette.skinTones}
-- Saturation: ${artDirection.colorPalette.saturation}
-- Temperature: ${artDirection.colorPalette.temperature}
+- Primary: ${effectiveArtDirection.colorPalette.primary}
+- Secondary: ${effectiveArtDirection.colorPalette.secondary}
+- Accent: ${effectiveArtDirection.colorPalette.accent}
+- Skin Tones: ${effectiveArtDirection.colorPalette.skinTones}
+- Saturation: ${effectiveArtDirection.colorPalette.saturation}
+- Temperature: ${effectiveArtDirection.colorPalette.temperature}
 
 ## Lighting & Texture
-- Lighting Style: ${artDirection.lightingStyle}
-- Texture Style: ${artDirection.textureStyle}
+- Lighting Style: ${effectiveArtDirection.lightingStyle}
+- Texture Style: ${effectiveArtDirection.textureStyle}
 
 ## Mood Keywords
-${artDirection.moodKeywords.join(', ')}
+${effectiveArtDirection.moodKeywords.join(', ')}
 
 ## Your Task
 Create a comprehensive visual prompt that will be used to generate a scene/environment image.
@@ -618,13 +641,14 @@ export const generateVisualPrompt = async (
   genre: string,
   visualStyle: string = 'anime',
   language: string = '中文',
-  artDirection: ArtDirection,
+  artDirection: ArtDirection | undefined,
   model?: string
 ): Promise<{ visualPrompt: string; negativePrompt: string }> => {
   const resolvedModel = model || getDefaultChatModelId();
   logger.debug(LogCategory.AI, `🎨 generateVisualPrompt 调用 - 生成${type === 'character' ? '角色' : '场景'}视觉提示词，使用模型: ${resolvedModel}`);
   logScriptProgress(`正在生成${type === 'character' ? '角色' : '场景'}视觉提示词...`);
 
+  const effectiveArtDirection = artDirection || DEFAULT_ART_DIRECTION;
   const stylePrompt = getStylePrompt(visualStyle);
 
   const itemInfo = type === 'character' 
@@ -646,28 +670,28 @@ ${itemInfo}
 Visual Style: ${visualStyle} (${stylePrompt})
 
 ## Art Direction Guidelines
-${artDirection.consistencyAnchors}
+${effectiveArtDirection.consistencyAnchors}
 
 ## Design Rules
-${artDirection.characterDesignRules.proportions}
-${artDirection.characterDesignRules.eyeStyle}
-${artDirection.characterDesignRules.lineWeight}
-${artDirection.characterDesignRules.detailLevel}
+${effectiveArtDirection.characterDesignRules.proportions}
+${effectiveArtDirection.characterDesignRules.eyeStyle}
+${effectiveArtDirection.characterDesignRules.lineWeight}
+${effectiveArtDirection.characterDesignRules.detailLevel}
 
 ## Color Palette Guidelines
-- Primary: ${artDirection.colorPalette.primary}
-- Secondary: ${artDirection.colorPalette.secondary}
-- Accent: ${artDirection.colorPalette.accent}
-- Skin Tones: ${artDirection.colorPalette.skinTones}
-- Saturation: ${artDirection.colorPalette.saturation}
-- Temperature: ${artDirection.colorPalette.temperature}
+- Primary: ${effectiveArtDirection.colorPalette.primary}
+- Secondary: ${effectiveArtDirection.colorPalette.secondary}
+- Accent: ${effectiveArtDirection.colorPalette.accent}
+- Skin Tones: ${effectiveArtDirection.colorPalette.skinTones}
+- Saturation: ${effectiveArtDirection.colorPalette.saturation}
+- Temperature: ${effectiveArtDirection.colorPalette.temperature}
 
 ## Lighting & Texture
-- Lighting Style: ${artDirection.lightingStyle}
-- Texture Style: ${artDirection.textureStyle}
+- Lighting Style: ${effectiveArtDirection.lightingStyle}
+- Texture Style: ${effectiveArtDirection.textureStyle}
 
 ## Mood Keywords
-${artDirection.moodKeywords.join(', ')}
+${effectiveArtDirection.moodKeywords.join(', ')}
 
 ## Your Task
 Create a comprehensive visual prompt that will be used to generate a ${type} image.
@@ -729,19 +753,21 @@ Output the result in the following JSON format:
 export async function generateVisualPrompts(
   characters: Character[],
   scenes: Scene[],
-  artDirection: ArtDirection,
+  artDirection: ArtDirection | undefined,
   language: string = '中文',
   model?: string
 ): Promise<{ characters: string[]; scenes: string[] }> {
   const resolvedModel = model || getDefaultChatModelId();
   logger.debug(LogCategory.AI, `🎨 generateVisualPrompts 调用 - 批量生成视觉提示词，使用模型: ${resolvedModel}`);
 
+  const effectiveArtDirection = artDirection || DEFAULT_ART_DIRECTION;
+
   const characterPromises = characters.map(char => 
-    generateCharacterVisualPrompt(char, artDirection, language, resolvedModel)
+    generateCharacterVisualPrompt(char, effectiveArtDirection, language, resolvedModel)
   );
 
   const scenePromises = scenes.map(scene => 
-    generateSceneVisualPrompt(scene, artDirection, language, resolvedModel)
+    generateSceneVisualPrompt(scene, effectiveArtDirection, language, resolvedModel)
   );
 
   const [characterResults, sceneResults] = await Promise.all([
@@ -762,7 +788,7 @@ export async function generateVisualPrompts(
  */
 export const generateAllCharacterPrompts = async (
   characters: Character[],
-  artDirection: ArtDirection,
+  artDirection: ArtDirection | undefined,
   genre: string,
   visualStyle: string,
   language: string = '中文',
@@ -772,34 +798,35 @@ export const generateAllCharacterPrompts = async (
   logger.debug(LogCategory.AI, `🎨 generateAllCharacterPrompts 调用 - 批量生成角色视觉提示词，使用模型: ${resolvedModel}`);
   logScriptProgress('正在批量生成角色视觉提示词...');
 
+  const effectiveArtDirection = artDirection || DEFAULT_ART_DIRECTION;
   const stylePrompt = getStylePrompt(visualStyle);
 
   const prompt = `You are a world-class visual prompt engineer for ${visualStyle} productions.
 Your task is to create detailed visual prompts for multiple characters in a ${genre} production.
 
 ## Art Direction Guidelines
-${artDirection.consistencyAnchors}
+${effectiveArtDirection.consistencyAnchors}
 
 ## Character Design Rules
-${artDirection.characterDesignRules.proportions}
-${artDirection.characterDesignRules.eyeStyle}
-${artDirection.characterDesignRules.lineWeight}
-${artDirection.characterDesignRules.detailLevel}
+${effectiveArtDirection.characterDesignRules.proportions}
+${effectiveArtDirection.characterDesignRules.eyeStyle}
+${effectiveArtDirection.characterDesignRules.lineWeight}
+${effectiveArtDirection.characterDesignRules.detailLevel}
 
 ## Color Palette Guidelines
-- Primary: ${artDirection.colorPalette.primary}
-- Secondary: ${artDirection.colorPalette.secondary}
-- Accent: ${artDirection.colorPalette.accent}
-- Skin Tones: ${artDirection.colorPalette.skinTones}
-- Saturation: ${artDirection.colorPalette.saturation}
-- Temperature: ${artDirection.colorPalette.temperature}
+- Primary: ${effectiveArtDirection.colorPalette.primary}
+- Secondary: ${effectiveArtDirection.colorPalette.secondary}
+- Accent: ${effectiveArtDirection.colorPalette.accent}
+- Skin Tones: ${effectiveArtDirection.colorPalette.skinTones}
+- Saturation: ${effectiveArtDirection.colorPalette.saturation}
+- Temperature: ${effectiveArtDirection.colorPalette.temperature}
 
 ## Lighting & Texture
-- Lighting Style: ${artDirection.lightingStyle}
-- Texture Style: ${artDirection.textureStyle}
+- Lighting Style: ${effectiveArtDirection.lightingStyle}
+- Texture Style: ${effectiveArtDirection.textureStyle}
 
 ## Mood Keywords
-${artDirection.moodKeywords.join(', ')}
+${effectiveArtDirection.moodKeywords.join(', ')}
 
 ## Characters
 ${characters.map((c, i) => `
