@@ -311,6 +311,15 @@ function parseStoryParagraph(text: string, characters: Character[]): VNDialogueE
     };
   }
   
+  // 场景标题格式（无【】）：场景二 青牛客栈，午饭时分 或 场景二 青牛客栈，午饭时分】
+  const simpleSceneMatch = trimmed.match(/^场景(\d+)\s+(.+?)(】)?$/);
+  if (simpleSceneMatch) {
+    return { 
+      scene: `scene_${simpleSceneMatch[1]}`,
+      narration: (simpleSceneMatch[2] || '').replace(/】$/, '').trim()
+    };
+  }
+  
   // 动作描述格式：（韩胖子带着韩立走进客栈）
   const actionMatch = trimmed.match(/^【?\(（(.+?)\)'】?$/);
   if (actionMatch) {
@@ -507,4 +516,173 @@ export async function generateVNScriptFromShots(
     scenes: sceneDef,
     scripts
   };
+}
+
+function generateCharacterAssetKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '')
+    .replace(/\s+/g, '');
+}
+
+async function resolveImageUrlToBase64(imageUrl: string): Promise<string | null> {
+  if (!imageUrl) return null;
+  
+  if (imageUrl.startsWith('data:')) {
+    return imageUrl;
+  }
+  
+  if (imageUrl.startsWith('local:')) {
+    const localId = imageUrl.replace('local:', '');
+    try {
+      const { imageStorageService } = await import('./imageStorageService');
+      const blob = await imageStorageService.getImage(localId);
+      if (blob) {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch (error) {
+      logger.error(LogCategory.IMAGE, 'Failed to load local image:', error);
+    }
+    return null;
+  }
+  
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    try {
+      const response = await fetch(imageUrl);
+      if (response.ok) {
+        const blob = await response.blob();
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch (error) {
+      logger.error(LogCategory.IMAGE, 'Failed to fetch image:', error);
+    }
+    return null;
+  }
+  
+  return null;
+}
+
+export async function extractGameAssets(
+  shots: Shot[],
+  characters: Character[],
+  scenes: Scene[]
+): Promise<import('../types').GameAssets> {
+  logger.debug(LogCategory.AI, '🎨 开始提取游戏资源...');
+
+  const result: import('../types').GameAssets = {
+    scenes: {},
+    characters: {},
+    stats: {
+      totalScenes: 0,
+      totalCharacterSprites: 0,
+      totalImages: 0
+    }
+  };
+
+  const colorPalette = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#34495e'];
+
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i];
+    const key = `scene_${i + 1}`;
+    
+    let imageUrl = '';
+    if (scene.imageUrl) {
+      imageUrl = await resolveImageUrlToBase64(scene.imageUrl) || '';
+    }
+    
+    result.scenes[key] = {
+      id: scene.id,
+      name: scene.location,
+      imageUrl
+    };
+
+    if (imageUrl) {
+      result.stats.totalImages++;
+    }
+  }
+  result.stats.totalScenes = scenes.length;
+
+  for (let i = 0; i < characters.length; i++) {
+    const char = characters[i];
+    const key = generateCharacterAssetKey(char.name);
+    
+    const charAsset: import('../types').GameCharacterAsset = {
+      id: char.id,
+      key,
+      name: char.name,
+      color: colorPalette[i % colorPalette.length],
+      sprites: {}
+    };
+
+    if (char.imageUrl) {
+      const resolvedUrl = await resolveImageUrlToBase64(char.imageUrl);
+      if (resolvedUrl) {
+        charAsset.mainImageUrl = resolvedUrl;
+        charAsset.sprites['normal'] = resolvedUrl;
+        result.stats.totalImages++;
+        result.stats.totalCharacterSprites++;
+      }
+    }
+
+    for (let j = 0; j < char.variations.length; j++) {
+      const variation = char.variations[j];
+      if (variation.imageUrl) {
+        const resolvedUrl = await resolveImageUrlToBase64(variation.imageUrl);
+        if (resolvedUrl) {
+          const spriteName = variation.name?.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '') || `variation_${j + 1}`;
+          charAsset.sprites[spriteName] = resolvedUrl;
+          result.stats.totalImages++;
+          result.stats.totalCharacterSprites++;
+        }
+      }
+    }
+
+    result.characters[key] = charAsset;
+  }
+
+  logger.debug(LogCategory.AI, `✅ 资源提取完成: ${result.stats.totalScenes} 个场景, ${result.stats.totalCharacterSprites} 个角色立绘`);
+
+  return result;
+}
+
+export function generateMonogatariAssetConfig(
+  assets: import('../types').GameAssets
+): import('../types').MonogatariAssetConfig {
+  const config: import('../types').MonogatariAssetConfig = {
+    scenes: {},
+    characters: {}
+  };
+
+  Object.entries(assets.scenes).forEach(([key, scene]) => {
+    if (scene.imageUrl) {
+      config.scenes[key] = `scenes/${key}.png`;
+    } else {
+      config.scenes[key] = 'scenes/placeholder.png';
+    }
+  });
+
+  Object.entries(assets.characters).forEach(([key, char]) => {
+    config.characters[key] = {
+      name: char.name,
+      color: char.color,
+      directory: key,
+      sprites: {}
+    };
+
+    Object.entries(char.sprites).forEach(([spriteName, imageUrl]) => {
+      config.characters[key].sprites[spriteName] = `characters/${key}/${spriteName}.png`;
+    });
+  });
+
+  return config;
 }

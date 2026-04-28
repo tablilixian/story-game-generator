@@ -5,7 +5,8 @@ import { useAlert } from '../GlobalAlert';
 import { logger, LogCategory } from '../../services/logger';
 import { convertRawScriptToVNScript, convertAllChaptersToVNScript } from '../../services/vnScriptConverter';
 import { generateVNScriptFromShots } from '../../services/vnScriptConverter';
-import { downloadMonogatariScript, openGamePreview, downloadCompleteGame } from '../../utils/monogatariExport';
+import { downloadMonogatariScript, openGamePreview, downloadCompleteGame, downloadCompleteGameWithAssets } from '../../utils/monogatariExport';
+import { extractGameAssets } from '../../services/vnScriptConverter';
 
 interface StageGameExportProps {
   project: ProjectState;
@@ -144,15 +145,46 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
     showAlert('Monogatari 脚本已导出！', { type: 'success' });
   };
 
-  const handleExportCompleteGame = () => {
+  const handleExportCompleteGame = async () => {
     if (!project.novelData?.vnScript) {
       showAlert('请先生成游戏剧本', { type: 'warning' });
       return;
     }
 
-    downloadCompleteGame(project.novelData.vnScript, project.title || 'game');
-    logger.info(LogCategory.UI, '✅ 完整游戏已导出');
-    showAlert('完整游戏已导出！', { type: 'success' });
+    const hasScriptData = project.scriptData && project.scriptData.characters && project.scriptData.characters.length > 0;
+    const hasScriptDataCharacters = hasScriptData && project.scriptData.characters.length > 0;
+    const hasScriptDataScenes = hasScriptData && project.scriptData.scenes && project.scriptData.scenes.length > 0;
+    const hasShots = project.shots && project.shots.length > 0;
+
+    let assets = null;
+    if (hasScriptDataCharacters && hasScriptDataScenes && hasShots) {
+      assets = await extractGameAssets(
+        project.shots,
+        project.scriptData!.characters,
+        project.scriptData!.scenes
+      );
+      
+      if (assets.stats.totalImages === 0) {
+        showAlert('没有可导出的图片资源', { type: 'warning' });
+      }
+    }
+
+    if (assets && assets.stats.totalImages > 0) {
+      await downloadCompleteGameWithAssets(
+        project.novelData.vnScript,
+        assets,
+        project.title || 'game',
+        (message, percent) => {
+          logger.debug(LogCategory.UI, `导出进度: ${percent}% - ${message}`);
+        }
+      );
+      logger.info(LogCategory.UI, `✅ 完整游戏已导出（含 ${assets.stats.totalImages} 张图片）`);
+      showAlert(`完整游戏已导出！含 ${assets.stats.totalImages} 张图片`, { type: 'success' });
+    } else {
+      downloadCompleteGame(project.novelData.vnScript, project.title || 'game');
+      logger.info(LogCategory.UI, '✅ 完整游戏已导出');
+      showAlert('完整游戏已导出！', { type: 'success' });
+    }
   };
 
   const hasNovelData = project.novelData && project.novelData.sourceText;
@@ -266,9 +298,28 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
             </p>
             
             {hasVnScript ? (
-              <div className="flex items-center gap-2 px-4 py-3 bg-green-600/20 text-green-400 rounded-lg">
-                <CheckCircle className="w-5 h-5" />
-                <span>剧本已生成</span>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 px-4 py-3 bg-green-600/20 text-green-400 rounded-lg">
+                  <CheckCircle className="w-5 h-5" />
+                  <span>剧本已生成</span>
+                </div>
+                <button
+                  onClick={handleAIGenerateScript}
+                  disabled={!hasScriptDataCharacters || !hasScriptDataScenes || !hasShots || isGeneratingScript}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-purple-600/80 text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isGeneratingScript ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      AI 生成中...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      重新 AI 生成
+                    </>
+                  )}
+                </button>
               </div>
             ) : (
               <button

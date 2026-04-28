@@ -8,6 +8,7 @@ export interface VNEvent {
   narration?: string;
   character?: string;
   text?: string;
+  expression?: string;
   monologue?: string;
   action?: string;
   choice?: string;
@@ -31,6 +32,31 @@ export interface VisualNovelScriptData {
   scenes: Record<string, string>;
   scripts: Record<string, VNScript>;
   languages?: LanguageMetadata[];
+}
+
+export interface GameSceneAsset {
+  id: string;
+  name: string;
+  imageUrl: string;
+}
+
+export interface GameCharacterAsset {
+  id: string;
+  key: string;
+  name: string;
+  color: string;
+  mainImageUrl?: string;
+  sprites: Record<string, string>;
+}
+
+export interface GameAssets {
+  scenes: Record<string, GameSceneAsset>;
+  characters: Record<string, GameCharacterAsset>;
+  stats: {
+    totalScenes: number;
+    totalCharacterSprites: number;
+    totalImages: number;
+  };
 }
 
 const DEMO_SCRIPT_TEMPLATE = `/* global monogatari */
@@ -625,14 +651,43 @@ function escapeString(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
 }
 
-function generateCharactersContent(characters: Record<string, { name: string; color: string }>): string {
+function generateCharactersContent(characters: Record<string, { name: string; color: string }>, assets?: GameAssets): string {
   const keys = Object.keys(characters);
   if (keys.length === 0) {
     return '';
   }
   
+  const assetsCharMap: Record<string, any> = {};
+  if (assets?.characters) {
+    Object.entries(assets.characters).forEach(([key, charAsset]) => {
+      assetsCharMap[charAsset.name] = charAsset;
+    });
+  }
+  
   return keys.map(key => {
     const char = characters[key];
+    
+    let spritesContent = '';
+    const matchedAsset = assetsCharMap[char.name];
+    
+    if (matchedAsset?.sprites && Object.keys(matchedAsset.sprites).length > 0) {
+      const spriteEntries = Object.entries(matchedAsset.sprites);
+      spritesContent = spriteEntries.map(([spriteName, imageUrl]) => {
+        return `\t\t\t'${spriteName}': '${spriteName}.png'`;
+      }).join(',\n');
+    }
+    
+    if (spritesContent) {
+      return `\t'${key}': {
+\t\tname: '${char.name}',
+\t\tcolor: '${char.color || '#3498db'}',
+\t\tdirectory: '${key}',
+\t\tsprites: {
+\t\t${spritesContent}
+\t\t}
+\t}`;
+    }
+    
     return `\t'${key}': {
 \t\tname: '${char.name}',
 \t\tcolor: '${char.color || '#3498db'}'
@@ -640,14 +695,20 @@ function generateCharactersContent(characters: Record<string, { name: string; co
   }).join(',\n');
 }
 
-function generateScenesContent(scenes: Record<string, string>): string {
+function generateScenesContent(scenes: Record<string, string>, assets?: GameAssets): string {
   const keys = Object.keys(scenes);
   if (keys.length === 0) {
     return '\tblack: \'black.png\'';
   }
   
   return keys.map((key, index) => {
-    return `\tscene_${index + 1}: 'scene_placeholder.png'`;
+    let filePath = 'scene_placeholder.png';
+    
+    if (assets?.scenes?.[key]?.imageUrl) {
+      filePath = `${key}.png`;
+    }
+    
+    return `\t${key}: '${filePath}'`;
   }).join(',\n');
 }
 
@@ -657,16 +718,25 @@ function generateLanguagesContent(languages?: LanguageMetadata[]): string {
 
 function generateScriptContent(
   scripts: Record<string, VNScript>,
-  sceneNameToIndex: Record<string, string>
+  sceneNameToIndex: Record<string, string>,
+  characters: Record<string, { name: string; color: string }>
 ): string {
   const labels = Object.keys(scripts);
   if (labels.length === 0) {
     return '\t\'Start\': [\n\t\t\'show scene black\',\n\t\t\'centered 故事开始...\'\n\t]';
   }
 
+  const registeredCharacters = new Set(Object.keys(characters));
   const scriptContent = labels.map(label => {
     const script = scripts[label];
-    const events = script.events.map(event => convertEventToMonogatari(event, sceneNameToIndex)).join(',\n');
+    let lastCharacter: string | undefined;
+    const events = script.events.map(event => {
+      const result = convertEventToMonogatari(event, sceneNameToIndex, lastCharacter, registeredCharacters);
+      if (event.character) {
+        lastCharacter = event.character;
+      }
+      return result;
+    }).join(',\n');
     return `\t'${label}': [
 \t\t${events}
 \t]`;
@@ -675,14 +745,26 @@ function generateScriptContent(
   return scriptContent;
 }
 
-function convertEventToMonogatari(event: VNEvent, sceneNameToIndex: Record<string, string>): string {
+function convertEventToMonogatari(
+  event: VNEvent, 
+  sceneNameToIndex: Record<string, string>, 
+  lastCharacter: string | undefined,
+  registeredCharacters: Set<string>
+): string {
   if (event.scene) {
     const mappedScene = sceneNameToIndex[event.scene] || event.scene;
     return `'show scene ${mappedScene}'`;
   } else if (event.narration) {
     return `'centered ${escapeString(event.narration)}'`;
   } else if (event.character && event.text) {
-    return `'${event.character} ${escapeString(event.text)}'`;
+    let result = '';
+    const spriteName = event.expression || 'normal';
+    const isRegistered = registeredCharacters.has(event.character);
+    if (isRegistered && lastCharacter !== event.character) {
+      result += `'show character ${event.character} ${spriteName} center with fadeIn',\n\t\t`;
+    }
+    result += `'${event.character} ${escapeString(event.text)}'`;
+    return result;
   } else if (event.monologue) {
     return `'centered ${escapeString(event.monologue)}'`;
   } else if (event.action) {
@@ -709,7 +791,8 @@ function convertEventToMonogatari(event: VNEvent, sceneNameToIndex: Record<strin
 
 export function exportToMonogatari(
   vnScript: VisualNovelScriptData,
-  options: MonogatariExportOptions = {}
+  options: MonogatariExportOptions = {},
+  assets?: GameAssets
 ): string {
   const sceneKeys = Object.keys(vnScript.scenes);
   const sceneNameToIndex: Record<string, string> = {};
@@ -717,9 +800,9 @@ export function exportToMonogatari(
     sceneNameToIndex[vnScript.scenes[key] || key] = `scene_${index + 1}`;
   });
 
-  const charactersContent = generateCharactersContent(vnScript.characters);
-  const scenesContent = generateScenesContent(vnScript.scenes);
-  const scriptContent = generateScriptContent(vnScript.scripts, sceneNameToIndex);
+  const charactersContent = generateCharactersContent(vnScript.characters, assets);
+  const scenesContent = generateScenesContent(vnScript.scenes, assets);
+  const scriptContent = generateScriptContent(vnScript.scripts, sceneNameToIndex, vnScript.characters);
   const languagesContent = generateLanguagesContent(vnScript.languages);
 
   let result = DEMO_SCRIPT_TEMPLATE;
@@ -1191,6 +1274,149 @@ export async function downloadCompleteGame(
   onProgress?: (message: string, percent: number) => void
 ): Promise<void> {
   const blob = await generateCompleteGameZip(vnScript, projectName, onProgress);
+  
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${projectName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function base64ToBlob(base64: string): Blob | null {
+  try {
+    const parts = base64.split(',');
+    if (parts.length !== 2) return null;
+    
+    const mimeMatch = parts[0].match(/:([^;]+);/);
+    if (!mimeMatch) return null;
+    
+    const mime = mimeMatch[1];
+    const b64 = parts[1];
+    
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    
+    return new Blob([bytes], { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+function addAssetsToZip(zip: any, assets: GameAssets, onProgress?: (message: string, percent: number) => void): void {
+  const scenesFolder = zip.folder('assets/scenes');
+  const charactersFolder = zip.folder('assets/characters');
+  
+  let processed = 0;
+  const total = assets.stats.totalImages;
+  
+  Object.entries(assets.scenes).forEach(([key, scene]) => {
+    if (scene.imageUrl && scenesFolder) {
+      const blob = base64ToBlob(scene.imageUrl);
+      if (blob) {
+        scenesFolder.file(`${key}.png`, blob);
+      } else {
+        console.warn(`Failed to convert scene image to blob: ${key}`);
+      }
+    }
+    processed++;
+    onProgress?.(`正在导出场景图片 (${processed}/${total})...`, Math.round((processed / total) * 100));
+  });
+  
+  Object.entries(assets.characters).forEach(([key, char]) => {
+    const charFolder = charactersFolder?.folder(key);
+    if (!charFolder) {
+      console.warn(`Failed to create character folder: ${key}`);
+      return;
+    }
+    
+    Object.entries(char.sprites).forEach(([spriteName, imageUrl]) => {
+      if (imageUrl) {
+        const blob = base64ToBlob(imageUrl);
+        if (blob) {
+          charFolder.file(`${spriteName}.png`, blob);
+        } else {
+          console.warn(`Failed to convert character sprite to blob: ${key}/${spriteName}`);
+        }
+      }
+      processed++;
+      onProgress?.(`正在导出角色图片 (${processed}/${total})...`, Math.round((processed / total) * 100));
+    });
+  });
+}
+
+export async function generateCompleteGameZipWithAssets(
+  vnScript: VisualNovelScriptData,
+  assets: GameAssets,
+  projectName: string = 'my-visual-novel',
+  onProgress?: (message: string, percent: number) => void
+): Promise<Blob> {
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  const safeName = projectName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
+  
+  onProgress?.('正在准备游戏文件...', 2);
+  
+  const scriptContent = exportToMonogatari(vnScript, {}, assets);
+  
+  onProgress?.('正在获取文件列表...', 5);
+  const fileList = await listMonogatariFiles();
+  
+  onProgress?.('正在复制引擎文件...', 10);
+  
+  let loadedFiles = 0;
+  const totalFiles = fileList.length + 2;
+  
+  for (const filePath of fileList) {
+    if (filePath === 'index.html') {
+      let content = await fetchMonogatariFile(filePath);
+      if (content) {
+        content = content.replace(/<title>.*?<\/title>/, `<title>${safeName} - 视觉小说</title>`);
+        zip.file(filePath, content);
+      }
+    } else {
+      const content = await fetchMonogatariFile(filePath);
+      if (content !== null) {
+        zip.file(filePath, content);
+      }
+    }
+    loadedFiles++;
+    onProgress?.(`正在加载引擎文件 (${loadedFiles}/${totalFiles})...`, 10 + Math.round((loadedFiles / totalFiles) * 40));
+  }
+  
+  onProgress?.('正在生成游戏脚本...', 55);
+  zip.file('js/script.js', scriptContent);
+  
+  onProgress?.('正在生成游戏配置...', 60);
+  zip.file('js/options.js', generateOptionsJs());
+  zip.file('js/storage.js', generateStorageJs());
+  
+  if (assets && assets.stats.totalImages > 0) {
+    onProgress?.('正在导出资源图片...', 65);
+    addAssetsToZip(zip, assets, onProgress);
+  }
+  
+  onProgress?.('正在压缩文件...', 95);
+  
+  const blob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+    onProgress?.('正在压缩...', 95 + Math.round(metadata.percent / 20));
+  });
+  
+  return blob;
+}
+
+export async function downloadCompleteGameWithAssets(
+  vnScript: VisualNovelScriptData,
+  assets: GameAssets,
+  projectName: string = 'my-visual-novel',
+  onProgress?: (message: string, percent: number) => void
+): Promise<void> {
+  const blob = await generateCompleteGameZipWithAssets(vnScript, assets, projectName, onProgress);
   
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

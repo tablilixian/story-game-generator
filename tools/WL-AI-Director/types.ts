@@ -278,6 +278,41 @@ export interface NovelData {
   } | null; // 生成的VN剧本
 }
 
+export interface GameSceneAsset {
+  id: string;
+  name: string;
+  imageUrl: string;
+}
+
+export interface GameCharacterAsset {
+  id: string;
+  key: string;
+  name: string;
+  color: string;
+  mainImageUrl?: string;
+  sprites: Record<string, string>;
+}
+
+export interface GameAssets {
+  scenes: Record<string, GameSceneAsset>;
+  characters: Record<string, GameCharacterAsset>;
+  stats: {
+    totalScenes: number;
+    totalCharacterSprites: number;
+    totalImages: number;
+  };
+}
+
+export interface MonogatariAssetConfig {
+  scenes: Record<string, string>;
+  characters: Record<string, {
+    name: string;
+    color: string;
+    directory: string;
+    sprites: Record<string, string>;
+  }>;
+}
+
 export interface RenderLog {
   id: string;
   timestamp: number; // Unix timestamp when API was called
