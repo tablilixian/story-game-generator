@@ -91,7 +91,9 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
         project.scriptData.title || '视觉小说',
         (current, total) => {
           logger.debug(LogCategory.AI, `📝 剧本生成进度: ${current}/${total}`);
-        }
+        },
+        // 传入 storyParagraphs（如果存在），用于生成更丰富的 VN 事件
+        project.scriptData.storyParagraphs
       );
 
       updateProject({
@@ -218,10 +220,23 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
             </p>
             
             {hasVnScript ? (
-              <div className="flex items-center gap-2 px-4 py-3 bg-green-600/20 text-green-400 rounded-lg">
-                <CheckCircle className="w-5 h-5" />
-                <span>剧本已生成</span>
-              </div>
+              <button
+                onClick={handleAIGenerateScript}
+                disabled={isGeneratingScript}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isGeneratingScript ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    重新生成中...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    重新生成剧本
+                  </>
+                )}
+              </button>
             ) : (
               <button
                 onClick={handleQuickConvert}

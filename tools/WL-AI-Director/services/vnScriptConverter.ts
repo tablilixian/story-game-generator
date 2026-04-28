@@ -78,18 +78,11 @@ function extractDialogues(text: string): { type: 'dialogue' | 'narration' | 'act
 }
 
 function generateCharacterKey(name: string): string {
+  // 直接保留中文字符和数字，用于 Monogatari 键名
+  // 移除空格和特殊字符，保留中文、英文、数字
   const key = name
     .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '')
-    .replace(/[\u4e00-\u9fa5]/g, (char) => {
-      const pinyinMap: Record<string, string> = {
-        '韩': 'han', '立': 'li', '父': 'fu', '母': 'mu',
-        '铸': 'zhu', '张': 'zhang', '叔': 'shu', '老': 'lao',
-        '三': 'san', '胖': 'pang', '王': 'wang', '护': 'hu',
-        '法': 'fa'
-      };
-      return pinyinMap[char] || char;
-    });
+    .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
   return key || 'unknown';
 }
 
@@ -297,12 +290,127 @@ export function convertRawScriptToVNScript(
   return convertTextToVNScript(rawScript, 'Start', characters, scenes);
 }
 
+/**
+ * 解析 storyParagraph 中的文本，根据格式提取 VN 事件
+ * 支持的格式：
+ * - 角色对白：角色(表情)：对话 → { character, text }
+ * - 动作描述：（动作描述） → { action }
+ * - 画外音：画外音：内容 → { narration }
+ * - 场景标题：【场景X：名称，时间】 → { scene }
+ * - 环境描述：默认无角色/动作标记 → { narration }
+ */
+function parseStoryParagraph(text: string, characters: Character[]): VNDialogueEvent {
+  const trimmed = text.trim();
+  
+  // 场景标题格式：【场景二：青牛客栈，午饭时分】
+  const sceneMatch = trimmed.match(/^【场景(\d+)[:：](.+?)】?$/);
+  if (sceneMatch) {
+    return { 
+      scene: `scene_${sceneMatch[1]}`,
+      narration: sceneMatch[2].trim()
+    };
+  }
+  
+  // 动作描述格式：（韩胖子带着韩立走进客栈）
+  const actionMatch = trimmed.match(/^【?\(（(.+?)\)'】?$/);
+  if (actionMatch) {
+    return { action: actionMatch[1].trim() };
+  }
+  
+  // 检查是否以（开头和）结尾，可能是动作描述
+  if (trimmed.startsWith('（') && trimmed.endsWith('）')) {
+    return { action: trimmed.slice(1, -1).trim() };
+  }
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+    return { action: trimmed.slice(1, -1).trim() };
+  }
+  
+  // 画外音格式：画外音：内容
+  const voiceOverMatch = trimmed.match(/^(画外音|旁白|OS)[:：]\s*(.+)$/);
+  if (voiceOverMatch) {
+    return { narration: voiceOverMatch[2].trim() };
+  }
+  
+  // 角色对白格式：角色(表情)：对话 或 角色：对话
+  const dialogueMatch = trimmed.match(/^([^()\n:：]+?)(?:（([^）]+)）)?[:：]\s*(.+)$/);
+  if (dialogueMatch) {
+    const speakerName = dialogueMatch[1].trim();
+    const expression = dialogueMatch[2]?.trim(); // 可选的表情
+    const dialogueText = dialogueMatch[3].trim();
+    
+    // 尝试匹配已知角色
+    let characterKey = 'unknown';
+    const matchedChar = characters.find(c => c.name === speakerName);
+    
+    if (matchedChar) {
+      characterKey = generateCharacterKey(matchedChar.name);
+    } else {
+      // 如果没有匹配到已知角色，生成一个键名
+      characterKey = generateCharacterKey(speakerName);
+    }
+    
+    return { 
+      character: characterKey, 
+      text: expression ? `${expression} ${dialogueText}` : dialogueText 
+    };
+  }
+  
+  // 默认：环境描述/旁白
+  return { narration: trimmed };
+}
+
+/**
+ * 从 storyParagraphs 生成 VN 事件列表
+ * 按 sceneRefId 关联到对应的场景
+ */
+function generateEventsFromStoryParagraphs(
+  storyParagraphs: { id: number; text: string; sceneRefId: string }[],
+  scenes: Scene[],
+  characters: Character[]
+): VNDialogueEvent[] {
+  const events: VNDialogueEvent[] = [];
+  let currentSceneKey: string | null = null;
+  
+  for (const para of storyParagraphs) {
+    const event = parseStoryParagraph(para.text, characters);
+    
+    // 如果是场景切换事件，记录当前场景
+    if (event.scene) {
+      // 只有当场景真正改变时才添加 scene 事件
+      if (currentSceneKey !== event.scene) {
+        currentSceneKey = event.scene;
+        events.push({ scene: currentSceneKey });
+      }
+    } else {
+      // 非场景切换事件，根据 sceneRefId 确定当前场景
+      // 只有当 scene 发生改变时才生成 show scene 命令
+      const sceneIndex = scenes.findIndex(s => String(s.id) === String(para.sceneRefId));
+      const paraSceneKey = sceneIndex >= 0 ? `scene_${sceneIndex + 1}` : null;
+      
+      if (paraSceneKey && paraSceneKey !== currentSceneKey) {
+        currentSceneKey = paraSceneKey;
+        events.push({ scene: currentSceneKey });
+      }
+      
+      // 添加非场景切换事件（不带 scene 字段）
+      events.push(event);
+    }
+  }
+  
+  return events;
+}
+
 export async function generateVNScriptFromShots(
   shots: Shot[],
   characters: Character[],
   scenes: Scene[],
   projectTitle: string = '视觉小说',
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
+  /**
+   * 可选的 storyParagraphs，包含更详细的剧情信息
+   * 如果提供，将使用此数据生成 VN 事件，而不是 shots
+   */
+  storyParagraphs?: { id: number; text: string; sceneRefId: string }[]
 ): Promise<VisualNovelScriptData> {
   logger.debug(LogCategory.AI, `📝 开始从分镜生成 VN 剧本，共 ${shots.length} 个分镜`);
 
@@ -336,40 +444,55 @@ export async function generateVNScriptFromShots(
 
   const events: VNDialogueEvent[] = [];
   
-  for (let i = 0; i < shots.length; i++) {
-    const shot = shots[i];
+  // 如果提供了 storyParagraphs，使用它来生成更丰富的 VN 事件
+  if (storyParagraphs && storyParagraphs.length > 0) {
+    logger.debug(LogCategory.AI, `📝 使用 storyParagraphs 生成 VN 剧本，共 ${storyParagraphs.length} 个段落`);
     
-    const sceneIndex = scenes.findIndex(s => s.id === shot.sceneId);
-    if (sceneIndex >= 0) {
-      const sceneKey = `scene_${sceneIndex + 1}`;
-      events.push({ scene: sceneKey });
+    const paragraphEvents = generateEventsFromStoryParagraphs(storyParagraphs, scenes, characters);
+    
+    // 遍历段落事件，添加到主事件列表
+    for (let i = 0; i < paragraphEvents.length; i++) {
+      const event = paragraphEvents[i];
+      events.push(event);
+      onProgress?.(i + 1, paragraphEvents.length);
     }
+  } else {
+    // 使用原始的 shots 方式生成 VN 事件
+    for (let i = 0; i < shots.length; i++) {
+      const shot = shots[i];
+      
+      const sceneIndex = scenes.findIndex(s => s.id === shot.sceneId);
+      if (sceneIndex >= 0) {
+        const sceneKey = `scene_${sceneIndex + 1}`;
+        events.push({ scene: sceneKey });
+      }
 
-    if (shot.actionSummary) {
-      events.push({
-        narration: shot.actionSummary
-      });
-    }
-
-    if (shot.dialogue) {
-      const charIds = shot.characters || [];
-      if (charIds.length > 0) {
-        const char = characters.find(c => c.id === charIds[0]);
-        if (char) {
-          const charKey = generateCharacterKey(char.name);
-          events.push({
-            character: charKey,
-            text: shot.dialogue
-          });
-        }
-      } else {
+      if (shot.actionSummary) {
         events.push({
-          narration: shot.dialogue
+          narration: shot.actionSummary
         });
       }
-    }
 
-    onProgress?.(i + 1, shots.length);
+      if (shot.dialogue) {
+        const charIds = shot.characters || [];
+        if (charIds.length > 0) {
+          const char = characters.find(c => c.id === charIds[0]);
+          if (char) {
+            const charKey = generateCharacterKey(char.name);
+            events.push({
+              character: charKey,
+              text: shot.dialogue
+            });
+          }
+        } else {
+          events.push({
+            narration: shot.dialogue
+          });
+        }
+      }
+
+      onProgress?.(i + 1, shots.length);
+    }
   }
 
   scripts['Start'] = {
