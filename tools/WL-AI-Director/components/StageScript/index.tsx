@@ -33,7 +33,7 @@ interface Props {
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
 
-type TabMode = 'novel' | 'story' | 'script';
+type TabMode = 'story' | 'script';
 
 const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWithoutSave, finishAIProcessing, onShowModelConfig, onGeneratingChange }) => {
   const { showAlert } = useAlert();
@@ -122,7 +122,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
       }
     });
     
-    setActiveTab('novel');
+    setActiveTab('story');
     logger.debug(LogCategory.AI, `📚 已导入小说，字符数: ${text.length}, 章节数: ${chapters.length}`);
   };
 
@@ -870,16 +870,6 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
       )}
       <div className="flex border-b border-[var(--border-primary)] bg-[var(--bg-elevated)]">
         <button
-          onClick={() => setActiveTab('novel')}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            activeTab === 'novel'
-              ? 'text-[var(--accent)] border-b-2 border-[var(--accent)]'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          小说导入
-        </button>
-        <button
           onClick={() => setActiveTab('story')}
           className={`px-4 py-2 text-sm font-medium transition-colors ${
             activeTab === 'story'
@@ -900,24 +890,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, updateProjectWit
           分镜预览
         </button>
       </div>
-      {activeTab === 'novel' ? (
-        <div className="h-full overflow-hidden">
-          <NovelImportPanel
-            novelData={project.novelData}
-            onImport={handleNovelImport}
-            onAnalyzeChapters={handleAnalyzeChapters}
-            onGenerateScript={handleGenerateScript}
-            onQuickConvert={handleQuickConvert}
-            onApplyToScript={handleApplyToScript}
-            onExportMonogatari={handleExportMonogatari}
-            onPreviewGame={handlePreviewGame}
-            onExportCompleteGame={handleExportCompleteGame}
-            isAnalyzing={project.novelData?.isAnalyzing || false}
-            isGeneratingScript={isGeneratingScript}
-            isApplyingToScript={isApplyingToScript}
-          />
-        </div>
-      ) : activeTab === 'story' ? (
+      {activeTab === 'story' ? (
         <div className="flex h-full bg-[var(--bg-base)] text-[var(--text-secondary)]">
           <ConfigPanel
             title={localTitle}

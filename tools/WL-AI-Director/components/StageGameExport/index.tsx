@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Gamepad2, Zap, Download, Play, FileText, AlertCircle, CheckCircle, Loader2, Sparkles } from 'lucide-react';
+import { Gamepad2, Zap, Download, FileText, AlertCircle, CheckCircle, Loader2, Sparkles } from 'lucide-react';
 import { ProjectState } from '../../types';
 import { useAlert } from '../GlobalAlert';
 import { logger, LogCategory } from '../../services/logger';
 import { convertRawScriptToVNScript, convertAllChaptersToVNScript } from '../../services/vnScriptConverter';
 import { generateVNScriptFromShots } from '../../services/vnScriptConverter';
-import { downloadMonogatariScript, openGamePreviewWithLocalEngine, downloadCompleteGame, downloadCompleteGameWithAssets, exportGameToLocal, exportGameWithAssetsToLocal } from '../../utils/monogatariExport';
+import { downloadCompleteGame, downloadCompleteGameWithAssets, exportGameToLocal, exportGameWithAssetsToLocal } from '../../utils/monogatariExport';
 import { extractGameAssets } from '../../services/vnScriptConverter';
 
 interface StageGameExportProps {
@@ -76,32 +76,6 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
     } finally {
       setIsGeneratingScript(false);
     }
-  };
-
-  const handlePreviewGame = async () => {
-    if (!project.novelData?.vnScript) {
-      showAlert('请先生成游戏剧本', { type: 'warning' });
-      return;
-    }
-
-    try {
-      await openGamePreviewWithLocalEngine(project.novelData.vnScript, project.title || '视觉小说');
-      logger.info(LogCategory.UI, '🎮 游戏预览已打开');
-    } catch (error) {
-      logger.error(LogCategory.UI, '预览失败:', error);
-      showAlert('预览失败，请重试', { type: 'error' });
-    }
-  };
-
-  const handleExportScript = () => {
-    if (!project.novelData?.vnScript) {
-      showAlert('请先生成游戏剧本', { type: 'warning' });
-      return;
-    }
-
-    downloadMonogatariScript(project.novelData.vnScript, 'script.js');
-    logger.info(LogCategory.UI, '✅ Monogatari 脚本已导出');
-    showAlert('Monogatari 脚本已导出！', { type: 'success' });
   };
 
   const handleExportCompleteGame = async () => {
@@ -334,22 +308,6 @@ const StageGameExport: React.FC<StageGameExportProps> = ({ project, updateProjec
               </h3>
               
               <div className="space-y-3">
-                <button
-                  onClick={handlePreviewGame}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
-                >
-                  <Play className="w-5 h-5" />
-                  预览游戏
-                </button>
-                
-                <button
-                  onClick={handleExportScript}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[var(--accent)] text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
-                >
-                  <FileText className="w-5 h-5" />
-                  导出脚本 (Monogatari)
-                </button>
-                
                 <button
                   onClick={handleExportCompleteGame}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-lg font-medium hover:opacity-90 transition-opacity"
