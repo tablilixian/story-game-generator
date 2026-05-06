@@ -1,5 +1,5 @@
 import { logger, LogCategory } from './logger';
-import type { NovelChapter, NovelCharacter, NovelScene, Shot, Character, Scene } from '../types';
+import type { NovelChapter, NovelCharacter, NovelScene, Shot, Character, Scene, StoryParagraph } from '../types';
 
 export interface VNDialogueEvent {
   scene?: string;
@@ -373,7 +373,7 @@ function parseStoryParagraph(text: string, characters: Character[]): VNDialogueE
  * 按 sceneRefId 关联到对应的场景
  */
 function generateEventsFromStoryParagraphs(
-  storyParagraphs: { id: number; text: string; sceneRefId: string }[],
+  storyParagraphs: StoryParagraph[],
   scenes: Scene[],
   characters: Character[]
 ): VNDialogueEvent[] {
@@ -419,7 +419,7 @@ export async function generateVNScriptFromShots(
    * 可选的 storyParagraphs，包含更详细的剧情信息
    * 如果提供，将使用此数据生成 VN 事件，而不是 shots
    */
-  storyParagraphs?: { id: number; text: string; sceneRefId: string }[]
+  storyParagraphs?: StoryParagraph[]
 ): Promise<VisualNovelScriptData> {
   logger.debug(LogCategory.AI, `📝 开始从分镜生成 VN 剧本，共 ${shots.length} 个分镜`);
 

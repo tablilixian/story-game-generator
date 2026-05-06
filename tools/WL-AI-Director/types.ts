@@ -202,6 +202,22 @@ export interface ArtDirection {
   consistencyAnchors: string;
 }
 
+export type StoryElementType = 'dialogue' | 'narration' | 'voiceover' | 'sound' | 'action';
+
+export interface StoryElement {
+  type: StoryElementType;
+  speaker?: string;
+  text: string;
+  soundEffect?: string;
+}
+
+export interface StoryParagraph {
+  id: number;
+  text: string;
+  sceneRefId: string;
+  elements?: StoryElement[];
+}
+
 export interface ScriptData {
   title: string;
   genre: string;
@@ -214,7 +230,7 @@ export interface ScriptData {
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
-  storyParagraphs: { id: number; text: string; sceneRefId: string }[];
+  storyParagraphs: StoryParagraph[];
 }
 
 // Novel Phase Data (小说转视觉小说)

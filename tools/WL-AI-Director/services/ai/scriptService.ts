@@ -42,26 +42,39 @@ export const parseScriptToData = async (
   const startTime = Date.now();
 
   const prompt = `
-    Analyze the text and output a JSON object in the language: ${language}.
-    
-    Tasks:
-    1. Extract title, genre, logline (in ${language}).
-    2. Extract characters (id, name, gender, age, personality).
-    3. Extract scenes (id, location, time, atmosphere).
-    4. Break down the story into paragraphs linked to scenes.
-    
-    Input:
-    "${rawText.slice(0, 30000)}" // Limit input context if needed
-    
-    Output ONLY valid JSON with this structure:
+    分析以下文本，输出 JSON。使用语言：${language}。
+
+    任务：
+    1. 提取标题、类型、简介（使用 ${language}）
+    2. 提取角色（名字、性别、年龄、性格）
+    3. 提取场景（地点、时间、氛围）
+    4. 将故事拆分成段落，每个段落包含 elements 数组
+
+    核心规则：
+    - elements 中的 text 必须直接引用原文，不要总结或改写
+    - 对话（dialogue）：凡是用引号 "" 「」『』括起来的文字，必须提取为 dialogue，并填写 speaker
+    - 一个句子同时有叙述和对话时，必须拆分成多个元素
+    - sceneRefId 要根据场景变化使用不同的 id
+
+    输出格式：
     {
       "title": "string",
       "genre": "string",
       "logline": "string",
       "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string"}],
       "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
-      "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
+      "storyParagraphs": [{
+        "id": number,
+        "text": "string",
+        "sceneRefId": "string",
+        "elements": [
+          {"type": "dialogue" | "narration" | "voiceover" | "sound" | "action", "speaker": "string", "text": "string - 引用原文"}
+        ]
+      }]
     }
+
+    输入文本：
+    "${rawText.slice(0, 30000)}"
   `;
 
   try {
@@ -83,7 +96,17 @@ export const parseScriptToData = async (
       variations: []
     })) : [];
     const scenes = Array.isArray(parsed.scenes) ? parsed.scenes.map((s: any) => ({ ...s, id: String(s.id) })) : [];
-    const storyParagraphs = Array.isArray(parsed.storyParagraphs) ? parsed.storyParagraphs.map((p: any) => ({ ...p, sceneRefId: String(p.sceneRefId) })) : [];
+    const storyParagraphs = Array.isArray(parsed.storyParagraphs) ? parsed.storyParagraphs.map((p: any) => ({
+      id: p.id,
+      text: p.text,
+      sceneRefId: String(p.sceneRefId),
+      elements: Array.isArray(p.elements) ? p.elements.map((e: any) => ({
+        type: e.type,
+        speaker: e.speaker,
+        text: e.text,
+        soundEffect: e.soundEffect
+      })) : undefined
+    })) : [];
 
     const genre = parsed.genre || "通用";
 

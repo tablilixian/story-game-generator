@@ -13,7 +13,15 @@ export const MOCK_SCRIPT: ScriptData = {
   ],
   props: [],
   storyParagraphs: [
-    { id: 1, text: "Kael stands in the rain, looking up at the holographic billboard.", sceneRefId: "s1" }
+    { 
+      id: 1, 
+      text: "Kael stands in the rain, looking up at the holographic billboard.", 
+      sceneRefId: "s1",
+      elements: [
+        { type: "action", text: "Kael stands in the rain, looking up at the holographic billboard." },
+        { type: "sound", text: "Heavy rain falling, distant neon hum" }
+      ]
+    }
   ]
 };
 
