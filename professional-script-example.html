@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>专业剧本格式示例</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #f5f5f5;
+            line-height: 1.6;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #3498db;
+            margin: 30px 0 15px 0;
+            border-left: 4px solid #3498db;
+            padding-left: 10px;
+        }
+
+        .script-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border: 1px solid #e9ecef;
+        }
+
+        .script-content {
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
+        .scene-heading {
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .action {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+
+        .character {
+            text-transform: uppercase;
+            font-weight: bold;
+            margin-top: 15px;
+            margin-left: 40px;
+        }
+
+        .dialogue {
+            margin-left: 60px;
+            margin-bottom: 15px;
+        }
+
+        .parenthetical {
+            margin-left: 50px;
+            font-style: italic;
+        }
+
+        .transition {
+            text-align: right;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+
+        .format-explanation {
+            background: #e8f4fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border-left: 4px solid #3498db;
+        }
+
+        .format-item {
+            margin: 10px 0;
+            padding: 8px;
+            background: white;
+            border-radius: 3px;
+        }
+
+        .format-label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .format-example {
+            font-family: 'Courier New', monospace;
+            background: #f8f9fa;
+            padding: 5px;
+            margin-top: 5px;
+            border-radius: 3px;
+        }
+
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 15px 0;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎭 专业剧本格式规范</h1>
+        
+        <div class="format-explanation">
+            <h2>📋 剧本格式要素</h2>
+            
+            <div class="format-item">
+                <div class="format-label">1. 场景标题 (SCENE HEADING)</div>
+                <div class="format-example">INT. 春香酒楼 - 正午</div>
+                <div><strong>格式</strong>: [INT./EXT.] [地点] - [时间]</div>
+                <div><strong>说明</strong>: INT.=室内, EXT.=室外, 必须大写</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">2. 动作描述 (ACTION)</div>
+                <div class="format-example">(酒楼内弥漫着午饭时分的喧闹声)</div>
+                <div><strong>格式</strong>: 用括号包围，描述人物动作和环境</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">3. 人物名称 (CHARACTER)</div>
+                <div class="format-example">韩胖子</div>
+                <div><strong>格式</strong>: 居中，大写，距离左边距约4厘米</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">4. 对话 (DIALOGUE)</div>
+                <div class="format-example">小立，你在这屋里好好休息下...</div>
+                <div><strong>格式</strong>: 在人物名称下方，居中对齐</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">5. 情感指示 (PARENTHETICAL)</div>
+                <div class="format-example">(和蔼地)</div>
+                <div><strong>格式</strong>: 在人物名称和对话之间，用括号包围</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">6. 转场 (TRANSITION)</div>
+                <div class="format-example">FADE OUT.</div>
+                <div><strong>格式</strong>: 靠右对齐，大写</div>
+            </div>
+        </div>
+
+        <h2>🎬 专业剧本示例</h2>
+        
+        <div class="script-section">
+            <div class="script-content">
+<span class="scene-heading">淡入：</span>
+
+<span class="scene-heading">INT. 春香酒楼 - 正午</span>
+
+<span class="action">酒楼内弥漫着午饭时分的喧闹声。许多食客坐满了桌位。酒楼古旧，却透着一股古色古香的韵味。</span>
+
+<span class="action">一辆一看便知道是赶了不少路的马车，飞快地驶过青牛客栈的门前，停在春香酒楼门口。</span>
+
+<span class="action">从马车上下来一个圆脸带着小胡子的胖男子，和一个皮肤黝黑、十来岁的小孩。男子带着孩童大摇大摆地走进了酒楼。</span>
+
+<span class="character">熟客甲</span>
+<span class="parenthetical">(打趣)</span>
+<span class="dialogue">老韩，这个黑小子长得和你很像，不会是你背着家里婆娘生的儿子吧？</span>
+
+<span class="action">众人发出一阵哄笑。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(得意地)</span>
+<span class="dialogue">呸！这是我本家带来的亲侄子，当然和我有几分像了。</span>
+
+<span class="action">韩胖子招呼了几位熟客，便将韩立带到酒楼后面一个偏僻的小院子里。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(和蔼地)</span>
+<span class="dialogue">小立，你在这屋里好好休息下，养好精神，等内门的管事一来，我就叫你过去。我要先出去一下，招呼几位熟客。</span>
+
+<span class="action">韩胖子转身匆忙地向外走去，到门口时又转身嘱咐。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(不放心地)</span>
+<span class="dialogue">别乱跑啊，镇子里人太多，别走丢了，最好别出院子。</span>
+
+<span class="character">韩立</span>
+<span class="parenthetical">(老实地)</span>
+<span class="dialogue">嗯！</span>
+
+<span class="action">韩胖子放心地走了出去。韩立感到疲惫，一头倒在床上呼呼地睡了起来。</span>
+
+<span class="transition">淡出：</span>
+
+<span class="scene-heading">INT. 春香酒楼 - 夜晚</span>
+
+<span class="action">一个小厮送来了饭菜。韩立吃完后，小厮将碗筷收走。</span>
+
+<span class="action">韩胖子不慌不忙地走了进来。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(关切地)</span>
+<span class="dialogue">怎么样，饭菜还合你胃口吧，有些想家了吧？</span>
+
+<span class="character">韩立</span>
+<span class="parenthetical">(乖巧地)</span>
+<span class="dialogue">嗯，有点想了。</span>
+
+<span class="action">韩胖子满意地点头，开始讲述江湖趣事。韩立渐渐放松，两人有说有笑。</span>
+
+<span class="transition">切至：</span>
+
+<span class="scene-heading">INT. 春香酒楼 - 第三天 晚饭时间</span>
+
+<span class="action">韩立吃完晚饭，等待三叔时，一辆豪华马车停在酒楼门前。马车边框上插着一面锈着"玄"字的小三角黑旗。</span>
+
+<span class="action">马车上跳下一名四十多岁的瘦削汉子，动作敏捷，大步走向韩立所在的屋子。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(恭敬施礼)</span>
+<span class="dialogue">王护法，您老人家怎么亲自带人来了？</span>
+
+<span class="character">王护法</span>
+<span class="parenthetical">(冷哼，一脸傲色)</span>
+<span class="dialogue">哼！这段时间路上不太平，要加强防卫，长老命我亲自来领人。废话少说，这个小孩就是你要举荐的人？</span>
+
+<span class="action">韩胖子麻利地递上一个沉甸甸的袋子。</span>
+
+<span class="character">韩胖子</span>
+<span class="parenthetical">(低声)</span>
+<span class="dialogue">是的，是的，这是我本家的亲侄子，还望王护法路上多照应一下。</span>
+
+<span class="character">王护法</span>
+<span class="parenthetical">(掂量袋子，神色缓和)</span>
+<span class="dialogue">韩胖子，你挺会做人的嘛！你侄子我路上自会照顾一二的，时间不早了，还是赶紧上路吧。</span>
+
+<span class="action">王护法转身，示意韩立跟上。韩立看了一眼三叔，默默跟上王护法的脚步。</span>
+
+<span class="transition">淡出：</span>
+
+<span class="scene-heading">黑场</span>
+            </div>
+        </div>
+
+        <div class="note">
+            <strong>💡 专业剧本格式要点：</strong>
+            <ul>
+                <li>使用12号Courier New字体（每页约1分钟剧情）</li>
+                <li>页边距：上1英寸，下1英寸，左1.5英寸，右1英寸</li>
+                <li>场景标题、转场、人物名称全部大写</li>
+                <li>对话居中，左右各留出约2.5英寸边距</li>
+                <li>动作描述简明扼要，只写能被拍摄的内容</li>
+            </ul>
+        </div>
+
+        <h2>🎯 专业剧本 vs 小说</h2>
+        
+        <div class="format-explanation">
+            <div class="format-item">
+                <div class="format-label">小说写法</div>
+                <div class="format-example">韩立心里想："这个王护法看起来好凶，不知道会不会为难我。"</div>
+                <div><strong>问题</strong>: 内心活动无法被摄像机拍摄</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">剧本写法</div>
+                <div class="format-example">韩立紧张地看着王护法，手指不自觉地绞在一起。</div>
+                <div><strong>改进</strong>: 将内心活动转化为可视化的动作</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">小说写法</div>
+                <div class="format-example">七玄门曾经是威震一方的大门派...</div>
+                <div><strong>问题</strong>: 背景介绍过于冗长</div>
+            </div>
+
+            <div class="format-item">
+                <div class="format-label">剧本写法</div>
+                <div class="format-example">(画面中出现七玄门破败的山门，隐约可见昔日的辉煌)</div>
+                <div><strong>改进</strong>: 通过视觉元素展现背景</div>
+            </div>
+        </div>
+
+        <h2>📝 剧本写作黄金法则</h2>
+        
+        <div class="format-explanation">
+            <div><strong>1. 展示，不要讲述 (Show, Don't Tell)</strong></div>
+            <div>不要写"他很生气"，要写"他猛地拍桌而起，脸色铁青"</div>
+            
+            <div><strong>2. 每个场景都要有目的</strong></div>
+            <div>推动剧情、展现人物、制造冲突，三者必居其一</div>
+            
+            <div><strong>3. 对话要简洁有力</strong></div>
+            <div>避免长篇大论，每个角色说话要有独特风格</div>
+            
+            <div><strong>4. 动作描述要具体</strong></div>
+            <div>"他拿起杯子"不如"他颤抖着拿起桌上的空杯子"</div>
+        </div>
+    </div>
+</body>
+</html>

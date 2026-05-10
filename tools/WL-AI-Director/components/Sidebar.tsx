@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Users, Clapperboard, Film, ChevronLeft, ListTree, HelpCircle, Cpu, Sun, Moon, Loader2, LogOut, User, PenTool, Scissors, Gamepad2 } from 'lucide-react';
+import { FileText, Users, Clapperboard, Film, ChevronLeft, ListTree, HelpCircle, Cpu, Sun, Moon, Loader2, LogOut, User, PenTool, Scissors, Gamepad2, Code } from 'lucide-react';
 import logoImg from '../logo.png';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuthStore } from '../src/stores/authStore';
@@ -7,7 +7,7 @@ import { logger, LogCategory } from '../services/logger';
 
 interface SidebarProps {
   currentStage: string;
-  setStage: (stage: 'script' | 'assets' | 'director' | 'editor' | 'export' | 'prompts' | 'canvas' | 'game') => void;
+  setStage: (stage: 'script' | 'assets' | 'director' | 'editor' | 'export' | 'prompts' | 'canvas' | 'game' | 'webgal') => void;
   onExit: () => void;
   projectName?: string;
   onShowOnboarding?: () => void;
@@ -25,6 +25,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, proje
     { id: 'director', label: '导演工作台', icon: Clapperboard, sub: 'Phase 03' },
     { id: 'editor', label: '视频编辑', icon: Scissors, sub: 'NEW' },
     { id: 'game', label: '游戏导出', icon: Gamepad2, sub: 'Beta' },
+    { id: 'webgal', label: 'WebGAL转换', icon: Code, sub: 'NEW' },
     { id: 'export', label: '成片与导出', icon: Film, sub: 'Phase 04' },
     { id: 'canvas', label: '创意画布', icon: PenTool, sub: 'Beta' },
     { id: 'prompts', label: '提示词管理', icon: ListTree, sub: 'Advanced' },

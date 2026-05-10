@@ -351,7 +351,7 @@ export interface ProjectState {
   createdAt: number;
   lastModified: number;
   version: number;
-  stage: 'script' | 'assets' | 'director' | 'editor' | 'game' | 'export' | 'prompts' | 'canvas';
+  stage: 'script' | 'assets' | 'director' | 'editor' | 'game' | 'export' | 'prompts' | 'canvas' | 'webgal';
   
   // Script Phase Data
   rawScript: string;

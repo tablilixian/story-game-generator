@@ -343,6 +343,19 @@ export const BUILTIN_CHAT_MODELS: ChatModelDefinition[] = [
     isEnabled: true,
     params: { ...DEFAULT_CHAT_PARAMS },
   },
+  // GLM-4.7 系列模型
+  {
+    id: 'glm-4.7-flash',
+    name: 'GLM-4.7 Flash (免费)',
+    type: 'chat',
+    providerId: 'bigmodel',
+    apiModel: 'glm-4.7-flash',
+    endpoint: '/api/paas/v4/chat/completions',
+    description: '智谱 GLM-4.7 Flash 完全免费模型，30B参数，编程能力出色，SWE-Bench 59.2%',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: { ...DEFAULT_CHAT_PARAMS },
+  },
 ];
 
 /**

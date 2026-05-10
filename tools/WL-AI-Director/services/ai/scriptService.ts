@@ -41,41 +41,38 @@ export const parseScriptToData = async (
   logScriptProgress('正在解析剧本结构...');
   const startTime = Date.now();
 
-  const prompt = `
-    分析以下文本，输出 JSON。使用语言：${language}。
+  const prompt = `分析剧本，输出JSON。语言：${language}。
 
-    任务：
-    1. 提取标题、类型、简介（使用 ${language}）
-    2. 提取角色（名字、性别、年龄、性格）
-    3. 提取场景（地点、时间、氛围）
-    4. 将故事拆分成段落，每个段落包含 elements 数组
+任务：
+1. 提取标题、类型、简介
+2. 提取角色（名字、性别、年龄、性格）
+3. 提取场景（地点、时间、氛围）
+4. 拆分段落，每个段落包含elements数组
 
-    核心规则：
-    - elements 中的 text 必须直接引用原文，不要总结或改写
-    - 对话（dialogue）：凡是用引号 "" 「」『』括起来的文字，必须提取为 dialogue，并填写 speaker
-    - 一个句子同时有叙述和对话时，必须拆分成多个元素
-    - sceneRefId 要根据场景变化使用不同的 id
+规则：
+- elements中的text必须引用原文
+- 对话（引号内容）提取为dialogue，填写speaker
+- 叙述和对话分开
+- sceneRefId随场景变化
 
-    输出格式：
-    {
-      "title": "string",
-      "genre": "string",
-      "logline": "string",
-      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string"}],
-      "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
-      "storyParagraphs": [{
-        "id": number,
-        "text": "string",
-        "sceneRefId": "string",
-        "elements": [
-          {"type": "dialogue" | "narration" | "voiceover" | "sound" | "action", "speaker": "string", "text": "string - 引用原文"}
-        ]
-      }]
-    }
+格式：
+{
+  "title": "string",
+  "genre": "string", 
+  "logline": "string",
+  "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string"}],
+  "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
+  "storyParagraphs": [{
+    "id": number,
+    "text": "string",
+    "sceneRefId": "string",
+    "elements": [
+      {"type": "dialogue" | "narration" | "voiceover" | "sound" | "action", "speaker": "string", "text": "string"}
+    ]
+  }]
+}
 
-    输入文本：
-    "${rawText.slice(0, 30000)}"
-  `;
+文本："${rawText.slice(0, 15000)}"`;
 
   try {
     const responseText = await retryOperation(() => chatCompletion(prompt, resolvedModel, 0.7, 8192, 'json_object'));
