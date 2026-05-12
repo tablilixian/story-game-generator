@@ -1,0 +1,11 @@
+Game_name:七玄门风云 第一章 山边小村;
+Game_key:bee59c8a;
+Title_img:title.png;
+Title_bgm:title.mp3;
+Game_Logo:logo.png;
+Enable_Appreciation:true;
+Default_Language:zh_CN;
+Show_panic:false;
+Legacy_Expression_Blend_Mode:false;
+Max_line:3;
+Line_height:1.5;
